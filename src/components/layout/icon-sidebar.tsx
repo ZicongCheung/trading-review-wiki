@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import {
-  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, TrendingUp, PenLine, BarChart3, Target,
+  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, TrendingUp, PenLine, BarChart3, Target, Radar, BrainCircuit,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -101,6 +101,8 @@ const NAV_ITEMS: { view: NavView; icon: typeof FileText; labelKey: string }[] = 
   { view: "search", icon: Search, labelKey: "nav.search" },
   { view: "graph", icon: Network, labelKey: "nav.graph" },
   { view: "dashboard", icon: BarChart3, labelKey: "nav.dashboard" },
+  { view: "research-cockpit", icon: Radar, labelKey: "nav.researchCockpit" },
+  { view: "training-flywheel", icon: BrainCircuit, labelKey: "nav.trainingFlywheel" },
   { view: "plan", icon: Target, labelKey: "nav.plan" },
   { view: "lint", icon: ClipboardCheck, labelKey: "nav.lint" },
   { view: "review", icon: ClipboardList, labelKey: "nav.review" },
@@ -205,6 +207,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           {/* Quick Review */}
           <Tooltip>
             <TooltipTrigger
+              aria-label={t("nav.quickReview")}
               onClick={handleQuickReview}
               className="relative flex h-10 w-10 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
             >
@@ -218,6 +221,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           {NAV_ITEMS.map(({ view, icon: Icon, labelKey }) => (
             <Tooltip key={view}>
               <TooltipTrigger
+                aria-label={t(labelKey)}
                 onClick={() => setActiveView(view as WikiState["activeView"])}
                 className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
                   activeView === view
@@ -241,6 +245,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           {/* Deep Research */}
           <Tooltip>
             <TooltipTrigger
+              aria-label="Deep Research"
               onClick={() => toggleResearchPanel(!researchPanelOpen)}
               className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
                 researchPanelOpen
@@ -262,7 +267,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
         <div className="flex flex-col items-center gap-1 pb-1">
           {/* Daemon status indicator */}
           <Tooltip>
-            <TooltipTrigger className="flex h-6 w-6 items-center justify-center">
+            <TooltipTrigger aria-label="Clip server status" className="flex h-6 w-6 items-center justify-center">
               <span
                 className={`h-2.5 w-2.5 rounded-full ${
                   daemonStatus === "running" ? "bg-emerald-500" :
@@ -281,6 +286,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
+              aria-label={t("nav.settings")}
               onClick={() => setActiveView("settings")}
               className={`flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
                 activeView === "settings"
@@ -294,6 +300,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
+              aria-label={t("nav.switchProject")}
               onClick={onSwitchProject}
               className="flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-accent-foreground"
             >

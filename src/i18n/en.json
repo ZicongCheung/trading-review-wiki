@@ -9,6 +9,8 @@
     "search": "Search",
     "graph": "Graph",
     "dashboard": "Dashboard",
+    "researchCockpit": "Research Cockpit",
+    "trainingFlywheel": "Training Flywheel",
     "plan": "Plan Audit",
     "lint": "Lint",
     "review": "Review",

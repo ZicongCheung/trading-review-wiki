@@ -266,6 +266,40 @@ Tag 分类：
 
 总体裁决：不要过度合并。这个 wiki 是交易用知识库，不是百科全书；很多冲突不是重复，而是上位主题、事件催化、供需切片、价格切片、价值量切片混在一起。规则要让机器学会分层，而不是把所有相似词都并成一个大页。
 
+## 概念规范化路由
+
+Temporal Facts 解决的是事实状态；概念规范化解决的是“同一概念页反复分叉更新”的问题。它不删除旧页，也不搬迁正文，而是在摄入计划阶段给出 `conceptRouting`。
+
+命令：
+
+```sh
+npm run codex:ingest -- concepts audit \
+  --project /path/to/wiki \
+  --top-n 100
+```
+
+默认规则文件：
+
+```text
+data/concepts/canonical_rulings.json
+```
+
+规则含义：
+
+- `sameAs`：明显同义或标点差异。`mode: auto` 时，摄入计划会自动路由到标准承载页。
+- `mergeInto`：早期薄页或重复页候选。默认只提示，除非显式 `mode: auto`。
+- `childOf`：父子概念关系，例如 `HVLP铜箔 -> 铜箔`。永不自动合并。
+- `tradeSliceOf`：交易切片，例如涨价周期、鱼尾特征、高低切。永不自动合并。
+- `routingHints`：给模型看的关键词提示，不强制改写路径。
+
+dry-run 报告会显示：
+
+```text
+originalPath -> routedPath | ruleType | mode | auto | reason
+```
+
+第一版只自动处理高置信 `sameAs/auto`。其它候选先进入 `.llm-wiki/concept-governance/` 审计报告，由人逐步决定是否升级成自动规则。
+
 ## v1 暂不做
 
 - 不全库自动回填。

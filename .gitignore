@@ -47,3 +47,6 @@ pnpm-debug.log*
 
 # Brainstorm assets (not tracked in source control)
 .superpowers/
+
+# Local Codex/ingest runtime artifacts
+.llm-wiki/

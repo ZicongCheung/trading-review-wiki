@@ -5,5 +5,6 @@ pub mod http;
 pub mod migrate;
 pub mod normalize_dirs;
 pub mod project;
+pub mod research_cockpit;
 pub mod stock_codes;
 pub mod vectorstore;

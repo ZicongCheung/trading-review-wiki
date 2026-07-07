@@ -7,7 +7,7 @@
 它是围绕本地 Trading Review Wiki 工作区运行的一组命令行能力：
 
 - 把 `raw/**` 原始资料变成可审阅、可回滚的 `wiki/**/*.md` 更新。
-- 对 `wiki / raw / graph / facts / brain / stock_daily_sql` 做三档检索问答：`search`、`smart-search`、`ask`。
+- 对 `wiki / raw / graph / facts / brain / stock_daily_sql` 做多源检索问答。
 - 用 `data/facts/temporal_edges.jsonl` 记录会变化、会失效、会被证伪的时序事实。
 - 用 `data/brain/*.jsonl` 记录纠错、预测、验证、偏好和 guardrail。
 - 生成公司深度研究、盘前问题、盘后验证、训练样本和检索质量评估。
@@ -15,9 +15,10 @@
 核心边界：
 
 - `raw/**` 是原始资料，CLI 不改写。
-- `search / smart-search / ask` 永远只读。
+- `ask` 永远只读。
 - 正式写入 wiki 只通过 `apply --write`。
 - 时序事实只写 `data/facts/temporal_edges.jsonl`。
+- `wiki/股票/**` 不写个人交易执行流水；股票页只放公司研究、催化、基本面、验证框架和风险。
 - 股票 SQL 只从本机私有配置读取，公开仓库不保存连接信息或密码。
 
 ## 2. 两种上手路径
@@ -144,40 +145,14 @@ npm run codex:ingest -- apply \
 建议先做只读接入：
 
 ```sh
-npm run codex:ingest -- search \
-  --query "这个知识库目前有哪些核心主题？" \
-  --project /path/to/existing-wiki \
-  --preset auto
-```
-
-如果需要复杂问题的检索规划和证据重排，但不想让模型直接写结论：
-
-```sh
-npm run codex:ingest -- smart-search \
-  --query "这个知识库里哪些旧计划后来被验证或证伪？" \
-  --project /path/to/existing-wiki \
-  --provider codex \
-  --preset validate
-```
-
-如果需要最终回答，再用：
-
-```sh
 npm run codex:ingest -- ask \
   --query "这个知识库目前有哪些核心主题？" \
   --project /path/to/existing-wiki \
-  --provider codex
+  --sources wiki,raw,graph \
+  --show-sources
 ```
 
-如果 `search` 能输出 `正式 wiki`、`原始证据` 或 `关联扩展`，说明基本接入成功。要看完整机器上下文时，对 `ask` 加 `--show-context`。
-
-三档区别：
-
-| 命令 | 模型介入 | 输出 | 适合调用方 |
-|---|---|---|---|
-| `search` | 不调用模型 | 证据列表或 JSON | Shell/Python/Node 调度器、快速检索、自动化前置召回 |
-| `smart-search` | 只做检索规划和证据重排，失败时默认退回本地检索 | 子查询、证据排序、缺口 | 复杂问题、主题扩散、验证旧判断 |
-| `ask` | 检索后生成最终回答 | 带引用回答 | 面向用户的问答界面 |
+如果能看到 `wikiResults`、`rawResults` 或 `graphExpansions`，说明基本接入成功。
 
 已有库接入前检查：
 
@@ -315,7 +290,8 @@ OpenClaw 或类似调度器可以把 CLI 拆成三个角色：
 | 盘后验证预测 | `daily-loop --mode postclose --validate-pending-only --write` | `data/brain/validations.jsonl`、`.llm-wiki/wiki-feedback/*.md` |
 | 查询知识库 | `ask --show-sources` 或 `ask` | JSON 检索上下文，或 Markdown 答案 |
 | 审计概念/别名 | `temporal-facts audit --write` | `.llm-wiki/temporal-facts/*.json` 和 `.md` |
-| 公司研究底稿 | `company-research --deep` | `.llm-wiki/company-research/<run>/**` |
+| 审计重复概念页 | `concepts audit --write` | `.llm-wiki/concept-governance/*.json` 和 `.md` |
+| 公司研究底稿 | `company-research --deep --plugin-led` | `.llm-wiki/company-research/<run>/**` |
 
 ### OpenClaw 盘后入库范式
 
@@ -378,28 +354,9 @@ npm run codex:ingest -- daily-loop \
 
 ## 5. 命令怎么选
 
-### 5.1 只问问题
+### 4.1 只问问题
 
-只要证据，不要模型写结论：
-
-```sh
-npm run codex:ingest -- search \
-  --query "最近机器人主线是订单兑现还是情绪扩散？" \
-  --project /path/to/wiki-project \
-  --preset auto
-```
-
-复杂问题，需要模型先规划怎么检索、再重排证据：
-
-```sh
-npm run codex:ingest -- smart-search \
-  --query "最近机器人主线是订单兑现还是情绪扩散？哪些证据已经被验证？" \
-  --project /path/to/wiki-project \
-  --provider codex \
-  --preset deep
-```
-
-需要面向人类的完整回答：
+面向人类阅读：
 
 ```sh
 npm run codex:ingest -- ask \
@@ -408,13 +365,17 @@ npm run codex:ingest -- ask \
   --provider codex
 ```
 
-面向机器解析时，对 `search` 或 `smart-search` 加：
+面向机器读取检索上下文：
 
 ```sh
---output json
+npm run codex:ingest -- ask \
+  --query "最近机器人主线是订单兑现还是情绪扩散？" \
+  --project /path/to/wiki-project \
+  --sources wiki,raw,graph,facts,brain,stock-price \
+  --show-sources
 ```
 
-如果要调试 `ask` 的源路由，再用 `--show-sources`。它输出 JSON，适合外部软件解析：
+`--show-sources` 输出 JSON，适合外部软件解析：
 
 - `sourceRouting.selectedSources`
 - `nativeQueries`
@@ -432,7 +393,7 @@ npm run codex:ingest -- ask \
 - `stockDailyResults`
 - `marketValidation`
 
-### 5.2 摄入一份新资料
+### 4.2 摄入一份新资料
 
 推荐流程：
 
@@ -474,7 +435,7 @@ npm run codex:ingest -- apply \
   --write
 ```
 
-### 5.3 维护时序事实
+### 4.3 维护时序事实
 
 摄入 manifest 可以包含 `factWrites`。CLI 只允许写：
 
@@ -520,7 +481,7 @@ npm run codex:ingest -- temporal-facts audit \
 
 这些候选只是人工复核清单，不会自动改写 wiki。
 
-### 5.4 记录长期纠错和偏好
+### 4.4 记录长期纠错和偏好
 
 记录一条纠错：
 
@@ -550,13 +511,14 @@ npm run codex:ingest -- brain resolve \
 
 外部 Agent 可以把用户纠错、盘后复盘结论、失败案例都写入 brain，后续 `ask` 和 `daily-loop` 会把它作为约束和先验，但不会把 brain 当作市场事实本身。
 
-### 5.5 做公司深度研究
+### 4.5 做公司深度研究
 
 ```sh
 npm run codex:ingest -- company-research \
   --stock "公司名或股票代码" \
   --project /path/to/wiki-project \
-  --deep
+  --deep \
+  --plugin-led
 ```
 
 输出目录：
@@ -568,15 +530,33 @@ npm run codex:ingest -- company-research \
 典型产物：
 
 - `deep-company-report.md`
+- `plugin-led/plugin-led-input.json`
+- `plugin-led/data-analytics-model-analysis.md`
+- `plugin-led/plugin-led-company-report.md`
+- `plugin-led/plugin-led-company-report-complete.md`（仅在完整性修复触发时生成，最终路径以 `plugin-led/plugin-led.json` 为准）
+- `plugin-led/report-completeness.json`
+- `plugin-led/publish-readiness.json`
+- `plugin-led/plugin-led.json`
 - `financial-model-v2.xlsx`
 - `evidence-ledger.json`
 - `business-breakdown.json`
 - `wiki-change-candidates.md`
 - `deep-quality-audit.json`
 
-它只生成底稿和候选页，不直接写正式 `wiki/**`。
+`--plugin-led` 是公司深研 V2 推荐链路：主程序负责 CNINFO/Tushare/Tavily/wiki/行情库采集、证据包、底表、模型和写入边界；Data Analytics 做模型和证据质控；Public Equity Investing 直接生成主报告；Investment Banking 只在并购、定增、可转债、重组、融资等触发项出现，或显式 `--force-investment-banking-review` 时参与。它只生成底稿、插件产物和候选页，不直接写正式 `wiki/**` 或 `raw/**`。
 
-### 5.6 做行情验证
+保留旧链路：
+
+```sh
+npm run codex:ingest -- company-research \
+  --stock "公司名或股票代码" \
+  --project /path/to/wiki-project \
+  --deep \
+  --plugin-review \
+  --plugin-optimize
+```
+
+### 4.6 做行情验证
 
 ```sh
 npm run codex:ingest -- market-validate \
@@ -594,7 +574,7 @@ data/brain/validations.jsonl
 
 如果 SQL 不可用，命令会报告证据不足，不编造行情。
 
-### 5.7 做检索质量评估
+### 4.7 做检索质量评估
 
 ```sh
 npm run codex:ingest -- ask eval \
@@ -611,7 +591,7 @@ npm run codex:ingest -- ask eval \
 
 适合外部软件做回归测试：更新检索策略后，看 recall、source coverage、raw noise 是否变坏。
 
-### 5.8 清理临时报告
+### 4.8 清理临时报告
 
 ```sh
 npm run codex:ingest -- hygiene audit \
@@ -646,6 +626,7 @@ npm run codex:ingest -- hygiene apply \
 | `finalize` | 文本路径摘要 | `.llm-wiki/codex-ingest/<run>/changes.json` |
 | `apply` | 文本摘要 | apply report、正式 `wiki/**`、事实账本 |
 | `temporal-facts audit` | JSON 或文本摘要 | `--write` 时 `.llm-wiki/temporal-facts/*` |
+| `concepts audit` | JSON 或文本摘要 | `--write` 时 `.llm-wiki/concept-governance/*` |
 | `brain status` | JSON | 无写入 |
 | `brain remember` | 文本摘要 | `data/brain/*.jsonl` |
 | `brain resolve` | 文本摘要 | `data/brain/self_training_events.jsonl` |
@@ -711,16 +692,19 @@ flowchart TD
 3. **把会变的东西写 facts，把稳定总结写 wiki**
    订单、涨价、客户、产能、价格、验证信号、反证、替代链适合 facts。方法论、模式、概念框架、复盘总结适合 wiki。
 
-4. **用 `--include-invalidated` 做审计，不做默认问答**
+4. **别把交易执行流水写进股票页**
+   买入、卖出、成交价、数量、仓位、持仓流水、盈亏和交割单逐笔记录留在 raw、总结、策略、错误、模式或 brain；`wiki/股票/**` 只沉淀公司研究和可复用验证框架。
+
+5. **用 `--include-invalidated` 做审计，不做默认问答**
    默认问答只看当前有效事实；历史反证和已失效事实适合在审计、复盘、追责时显式打开。
 
-5. **把用户纠错写入 brain**
+6. **把用户纠错写入 brain**
    交易系统最有价值的是“以后不要再犯”。外部软件遇到用户纠正时，可以调用 `brain remember`，让后续问答和 daily-loop 都带上这条约束。
 
-6. **用 eval 做回归测试**
+7. **用 eval 做回归测试**
    每次改检索策略或大批量入库后，跑一组 `ask eval`，看关键页面是否仍能被召回。
 
-7. **把 SQL 当验证层，不当唯一真相层**
+8. **把 SQL 当验证层，不当唯一真相层**
    SQL 适合验证涨跌幅、量价、成交额和窗口表现。叙事原因仍要回到 wiki/raw/facts 证据链。
 
 ## 9. 常见集成坑
@@ -751,4 +735,4 @@ flowchart TD
 - `brain remember` 记录纠错。
 - `temporal-facts audit` 维护 predicate/alias。
 - `ask eval` 做检索质量回归。
-- `company-research --deep` 做公司研究底稿。
+- `company-research --deep --plugin-led` 做插件优先公司研究底稿。

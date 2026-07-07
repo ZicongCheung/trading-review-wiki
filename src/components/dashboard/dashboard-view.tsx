@@ -21,12 +21,13 @@ import {
 } from "recharts"
 import { TrendingUp, TrendingDown, Activity, Percent, Calendar, BarChart3, Wallet, Package } from "lucide-react"
 import { Input } from "@/components/ui/input"
+import { ResearchCockpitView } from "@/components/dashboard/research-cockpit-view"
 
 export function DashboardView() {
   const project = useWikiStore((s) => s.project)
   const [loading, setLoading] = useState(true)
   const [dayStats, setDayStats] = useState<TradeDayStats[]>([])
-  const [activeTab, setActiveTab] = useState<"stats" | "holdings">("stats")
+  const [activeTab, setActiveTab] = useState<"stats" | "holdings" | "research">("stats")
   const [marketPrices, setMarketPrices] = useState<Record<string, string>>({})
 
   const dataVersion = useWikiStore((s) => s.dataVersion)
@@ -116,7 +117,7 @@ export function DashboardView() {
     <div className="h-full overflow-auto p-6">
       <div className="mx-auto max-w-6xl space-y-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-2xl font-bold">交易统计看板</h2>
+          <h2 className="text-2xl font-bold">交易与研究看板</h2>
           <div className="flex items-center gap-2 rounded-lg border bg-muted/50 p-1">
             <button
               onClick={() => setActiveTab("stats")}
@@ -144,6 +145,17 @@ export function DashboardView() {
                   {holdings.length}
                 </span>
               )}
+            </button>
+            <button
+              onClick={() => setActiveTab("research")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                activeTab === "research"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Activity className="h-4 w-4" />
+              研究驾驶舱
             </button>
           </div>
         </div>
@@ -398,6 +410,10 @@ export function DashboardView() {
               )}
             </div>
           </>
+        )}
+
+        {activeTab === "research" && (
+          <ResearchCockpitView />
         )}
       </div>
     </div>

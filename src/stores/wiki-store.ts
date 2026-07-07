@@ -38,7 +38,7 @@ interface WikiState {
   selectedFile: string | null
   fileContent: string
   chatExpanded: boolean
-  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "review" | "dashboard" | "plan" | "settings"
+  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "review" | "dashboard" | "research-cockpit" | "training-flywheel" | "plan" | "settings"
   llmConfig: LlmConfig
   searchApiConfig: SearchApiConfig
   embeddingConfig: EmbeddingConfig

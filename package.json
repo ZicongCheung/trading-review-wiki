@@ -1,15 +1,19 @@
 {
   "name": "trading-review-wiki",
   "private": true,
-  "version": "0.10.5",
+  "version": "0.17.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "verify": "npm test -- --run && npm run build && git diff --check",
     "codex:ingest": "node scripts/codex-ingest.mjs",
+    "sag:sync": "node scripts/codex-ingest.mjs sag-sync",
     "gangtise:meeting-clues": "node scripts/gangtise-meeting-clues-report.mjs",
+    "machine:preflight": "node scripts/machine-role-preflight.mjs",
+    "machine:snapshot": "node scripts/sync-live-corpus-snapshot.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

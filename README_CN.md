@@ -40,20 +40,26 @@
 
 如果你想使用之前的 Tauri 桌面应用，而不是 CLI 自动化工具链，可以继续从 [GitHub Releases](https://github.com/ymj8903668-droid/trading-review-wiki/releases) 下载历史桌面版构建。桌面版保留三栏 Wiki UI、快速复盘、交割单导入、图谱视图、设置面板和 Save to Wiki 工作流。
 
-v0.10.5-codex-cli 的重点更新：
+v0.11.0-codex-cli 的重点更新：
 
-- **Temporal Facts v1**：新增轻量 Graphiti-style 时序事实账本 `data/facts/temporal_edges.jsonl`，用 `factWrites` 独立承载会变化、会过期、会被证伪的事实。
-- **当前事实检索**：默认问答只把 active/current facts 当作普通 `[F]` 证据；失效、替代和证伪事实默认只作为历史/反证，不污染主结论。
-- **审计模式**：`ask` 和 `ask eval` 支持 `--include-invalidated`，可以显式查看历史矛盾、替代链和证伪记录。
-- **候选词表审计**：`temporal-facts audit` 会从现有 `wiki/**/*.md` 提取 Predicate / Alias / Tag / Abbreviation 候选，供人工复核，不自动改写正式 wiki。
-- **写入边界**：`ingest/apply` 仍不写 `raw/**`；`factWrites` 只能写 `data/facts/temporal_edges.jsonl`；计划规模保护改为软告警，写入 `plan-budget.json`。
+- **CLI 模块化拆分**：`scripts/codex-ingest-lib.mjs` 继续作为兼容 facade，内部能力拆到 `scripts/codex-ingest/**`，原有 `npm run codex:ingest -- ...` 命令不变。
+- **多智能体 `ask --agentic`**：证据研究、反证审计、市场验证、交易策略并发运行，最后由裁判员综合为原 ask 六章节；默认写 `.llm-wiki/agent-runs/**` 审计产物。
+- **细分环节候选池验证**：主题问题可先识别 segment，再按光纤、连接器、PCB 等细分环节构建候选股票池；未配置时回退普通候选池并提示 `未配置细分环节`。
+- **Trading Autoresearch Lite**：新增 research program、locked score、experiment ledger、policy proposal。AI 可以提出改进建议，但默认不自动改 prompt、segment、wiki/raw，也不自动交易。
+- **公司深研 V2 `--plugin-led`**：主程序负责证据包、底表、模型和写入边界，Data Analytics 做数据和模型质控，Public Equity Investing 直接生成主报告，Investment Banking 只在交易事项触发或强制参数下参与。
+- **自训练样本闭环边界**：self-question、self-train、export-samples、policy action/review、agent-runs 和 plan verify 都保留审计链，高置信样本必须来自已复核证据。
+- **文档和教学材料**：补齐 CLI 使用手册、递归自训练交易 AI 框架报告、专业插件能力层说明、系统成长路径 PPT、CLI 操作教学 PPT 和 agent-skills 工程蓝图。
 
 快速入口：
 
 ```sh
 npm run codex:ingest -- temporal-facts audit \
   --project /path/to/your/trading-review-wiki-project \
-  --limit 200
+  --top-n 200
+
+npm run codex:ingest -- concepts audit \
+  --project /path/to/your/trading-review-wiki-project \
+  --top-n 100
 
 npm run codex:ingest -- ask \
   --query "最近哪些机器人产业链事实后来被反驳或替代？" \
@@ -63,14 +69,19 @@ npm run codex:ingest -- ask \
   --show-sources
 ```
 
-详细说明见 [docs/temporal-facts-v1.md](docs/temporal-facts-v1.md)，版本更新见 [CHANGELOG.md](CHANGELOG.md)。
+合并说明见 [docs/发布说明-v0.11.0-main合并准备.md](docs/发布说明-v0.11.0-main合并准备.md)，版本更新见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 使用与接入文档
 
 - [CLI 外部接入与使用指南](docs/CLI外部接入与使用指南.md)：给 OpenClaw、龙虾、Shell/Python/Node 调度器和其它非 Codex 软件看的完整接入说明，包含从 0 新建 wiki 化知识库和接入已有 wiki 化知识库两条路径。
+- [Codex Ingest CLI 使用手册](docs/codex-ingest-cli使用手册.md)：面向日常使用者，解释每组命令的意义、用法、产物和写入边界。
 - [交易复盘 Schema 参考模板](docs/交易复盘Schema参考模板.md)：从真实交易复盘 wiki 抽象出的 `schema.md` 示例，适合从 0 建库、改造已有 wiki 或给外部 Agent 定义写入边界。
 - [多源检索 RAG 完整流程](docs/多源检索RAG完整流程.md)：解释 `ask` 如何融合 wiki/raw/graph/facts/brain/SQL。
 - [Temporal Facts v1](docs/temporal-facts-v1.md)：解释时序事实账本、predicate、状态和人工审计流程。
+- [递归自训练交易 AI 框架报告](docs/递归自训练交易AI框架报告.md)：总结 agentic、market validation、daily-loop、自提问、自训练样本和人工审核门控路线图。
+- [专业插件能力层集成说明](docs/专业插件能力层集成说明.md)：说明 Data Analytics、Public Equity Investing、Investment Banking 如何作为数据质控、买方研究和交易事项分析层接入主程序。
+- [Plugin-led 公司深研 V2 更新报告](docs/更新报告-2026-06-16-plugin-led公司深研V2.md)：记录 `--plugin-led` 的实现范围、回退路径和验收命令。
+- [递归自训练交易 AI agent-skills 工程蓝图](docs/recursive-trading-ai-agent-skills-blueprint.md)：说明如何用 skills 固化规格、测试、评审和发布流程。
 
 ## 核心功能
 
@@ -79,7 +90,7 @@ npm run codex:ingest -- ask \
 - **快速复盘模板** — 侧边栏一键创建今日交易复盘，自动保存到 `raw/日复盘/`
 - **交割单导入** — CSV / Excel 交割单一键导入，自动识别券商表头，生成 markdown
 - **FIFO 盈亏计算** — 基于先进先出算法计算每日已实现盈亏，自动写入日复盘
-- **个股档案** — LLM 自动把股票相关洞察归档到 `wiki/股票/`，而非通用 `entities/`
+- **个股档案** — LLM 自动把公司研究、产业链位置、催化/基本面、验证框架归档到 `wiki/股票/`；个人买入卖出、成交价、仓位、盈亏和交割单流水不写入股票页
 - **图片支持** — 聊天可发截图，预览面板支持 PNG / JPG / GIF 等格式查看
 - **主题切换** — 5 种预设配色主题（午夜蓝、墨绿、深紫、琥珀），适配不同盯盘氛围
 - **Wiki Doctor** — 自动扫描并重组 wiki 目录结构：统一混合格式链接（`[[英维克]]` → `[[股票/英维克]]`）、将根目录松散文件移动到分类目录、检测拼音文件名建议重命名、冲突文件手动确认、操作前自动备份。

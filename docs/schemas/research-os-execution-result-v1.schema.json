@@ -1,0 +1,893 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-review-wiki.local/schemas/research-os-execution-result-v1.schema.json",
+  "title": "ResearchOS Execution Result v1",
+  "description": "Auditable real/paper execution result artifact for cross-validating broker fills, daily review notes, position tracking, and market data before feeding ResearchOS training flywheel.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "artifactId",
+    "generatedAt",
+    "ledgerKind",
+    "recordStatus",
+    "pnlScope",
+    "positionState",
+    "instrument",
+    "evidence",
+    "qualityGate",
+    "trainingBoundary"
+  ],
+  "properties": {
+    "schema": {
+      "const": "research-os-execution-result-v1"
+    },
+    "artifactId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id for this execution-result artifact."
+    },
+    "generatedAt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Local timestamp or ISO timestamp when this artifact was generated."
+    },
+    "asOfDate": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Evidence cutoff date. Market-derived fields must not use data after this date unless the record is a settlement/review artifact."
+    },
+    "ledgerKind": {
+      "type": "string",
+      "enum": [
+        "real_trade",
+        "paper_trade",
+        "broker_snapshot",
+        "review_derived"
+      ],
+      "description": "real_trade is broker/execution-backed. paper_trade must never be promoted as real PnL."
+    },
+    "recordStatus": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "needs_review",
+        "reviewed",
+        "confirmed",
+        "rejected",
+        "superseded"
+      ]
+    },
+    "pnlScope": {
+      "type": "string",
+      "enum": [
+        "execution_fill",
+        "matched_lot",
+        "closed_position",
+        "partial_exit",
+        "holding_snapshot",
+        "account_daily"
+      ],
+      "description": "Prevents account-level daily PnL or open floating PnL from being treated as realized single-trade PnL."
+    },
+    "positionState": {
+      "type": "string",
+      "enum": [
+        "opened",
+        "open",
+        "partial_exit",
+        "closed",
+        "unknown"
+      ]
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stockCode",
+        "stockName"
+      ],
+      "properties": {
+        "stockCode": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Original local code or exchange-prefixed code, e.g. 002049, sz002049, sh601728."
+        },
+        "tsCode": {
+          "type": "string",
+          "pattern": "^\\d{6}\\.(SZ|SH|BJ)$",
+          "description": "Tushare code when available."
+        },
+        "stockName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assetClass": {
+          "type": "string",
+          "enum": [
+            "a_share",
+            "fund",
+            "bond_reverse_repo",
+            "other"
+          ],
+          "default": "a_share"
+        }
+      }
+    },
+    "tradeWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entryDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "exitDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "holdingDays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "holdingDaysSource": {
+          "type": "string",
+          "enum": [
+            "broker_delivery_note",
+            "position_tracking",
+            "daily_review",
+            "derived_from_trade_dates",
+            "manual_review",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "fills": {
+      "type": "array",
+      "description": "Broker or paper-trade fills. Multiple fills are expected for split entries/exits.",
+      "items": {
+        "$ref": "#/$defs/fill"
+      }
+    },
+    "lotMatching": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "broker_reported",
+            "fifo",
+            "weighted_average_cost",
+            "manual_match",
+            "same_day_pairing",
+            "unknown"
+          ]
+        },
+        "matchedQuantity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unmatchedQuantity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "notes": {
+          "type": "string"
+        },
+        "matchedFillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "prices": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entryPrice": {
+          "type": "number"
+        },
+        "exitPrice": {
+          "type": "number"
+        },
+        "averageCost": {
+          "type": "number",
+          "description": "Average holding cost. Must not be treated as same-day trade price without fill evidence."
+        },
+        "markPrice": {
+          "type": "number",
+          "description": "Close/current price for holding snapshots and floating PnL."
+        },
+        "priceQuality": {
+          "$ref": "#/$defs/valueQuality"
+        }
+      }
+    },
+    "pnl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "type": "string",
+          "enum": [
+            "CNY"
+          ],
+          "default": "CNY"
+        },
+        "realizedGrossPnlAbs": {
+          "type": "number",
+          "description": "Gross realized PnL before fees when computable from matched fills."
+        },
+        "realizedNetPnlAbs": {
+          "type": "number",
+          "description": "Realized PnL after fees/taxes when computable."
+        },
+        "realizedPnlPct": {
+          "type": "number"
+        },
+        "floatingPnlAbs": {
+          "type": "number"
+        },
+        "floatingPnlPct": {
+          "type": "number"
+        },
+        "accountDailyPnlAbs": {
+          "type": "number",
+          "description": "Account-level daily PnL. Must not be used as single-position realized PnL."
+        },
+        "recordedPnlAbs": {
+          "type": "number",
+          "description": "PnL stated in a review/position page before reconciliation."
+        },
+        "pnlQuality": {
+          "$ref": "#/$defs/valueQuality"
+        },
+        "fees": {
+          "$ref": "#/$defs/fees"
+        }
+      }
+    },
+    "marketValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "tushare",
+            "price_sql",
+            "manual",
+            "unavailable"
+          ]
+        },
+        "priceRangeChecks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/priceRangeCheck"
+          }
+        },
+        "maxDrawdownPct": {
+          "type": "number"
+        },
+        "followThrough": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "return1dPct": {
+              "type": "number"
+            },
+            "return3dPct": {
+              "type": "number"
+            },
+            "return5dPct": {
+              "type": "number"
+            }
+          }
+        },
+        "relativeStrength": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "benchmarkCode": {
+              "type": "string"
+            },
+            "excessReturnPct": {
+              "type": "number"
+            },
+            "basis": {
+              "type": "string"
+            }
+          }
+        },
+        "turnoverChange": {
+          "type": "number"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "validationTarget": {
+          "type": "string",
+          "enum": [
+            "expectation_trade",
+            "fundamental_closure",
+            "priced_in_risk",
+            "failed_expectation",
+            "execution_discipline",
+            "unknown"
+          ]
+        },
+        "hypothesisId": {
+          "type": "string"
+        },
+        "hypothesisText": {
+          "type": "string"
+        },
+        "expectedMove": {
+          "type": "string"
+        },
+        "coreDrivers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "entryReason": {
+          "type": "string"
+        },
+        "exitReason": {
+          "type": "string"
+        },
+        "profitCredit": {
+          "type": "string",
+          "enum": [
+            "pattern_execution_supported",
+            "real_pattern_execution_supported",
+            "paper_pattern_execution_supported",
+            "beta_supported",
+            "entry_wrong",
+            "failed_expectation_negative",
+            "priced_in_late_entry",
+            "risk_reduction_supported",
+            "unattributed",
+            "needs_review"
+          ]
+        },
+        "behaviorTags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "collect_profit_feedback",
+              "behavior",
+              "skill",
+              "tool_habit",
+              "decision_strategy",
+              "risk_control",
+              "post_mortem"
+            ]
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceRefs"
+      ],
+      "properties": {
+        "sourceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        },
+        "evidenceSummary": {
+          "type": "string"
+        },
+        "primaryEvidenceKind": {
+          "type": "string",
+          "enum": [
+            "broker_delivery_note",
+            "daily_review",
+            "position_tracking",
+            "broker_snapshot",
+            "market_data",
+            "manual"
+          ]
+        },
+        "sourceCoverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hasBrokerDeliveryNote": {
+              "type": "boolean"
+            },
+            "hasDailyReview": {
+              "type": "boolean"
+            },
+            "hasPositionTracking": {
+              "type": "boolean"
+            },
+            "hasMarketData": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "reconciliationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How conflicting broker, review, position-tracking, and market-data assertions should be reconciled.",
+      "properties": {
+        "primaryFactSource": {
+          "type": "string",
+          "enum": [
+            "raw_delivery_note",
+            "broker_snapshot",
+            "paper_trade_ledger",
+            "manual_review",
+            "unknown"
+          ],
+          "description": "The source allowed to establish execution facts such as fills, quantities, prices, and realized PnL."
+        },
+        "positionTrackingRole": {
+          "type": "string",
+          "enum": [
+            "summary_cross_check_only",
+            "holding_snapshot_only",
+            "account_daily_only",
+            "secondary_when_delivery_note_present",
+            "untrusted_until_reconciled"
+          ],
+          "description": "position-tracking.md is a summary/cross-check source unless independently backed by delivery notes or broker snapshots."
+        },
+        "conflictResolution": {
+          "type": "string",
+          "enum": [
+            "prefer_raw_delivery_note",
+            "prefer_broker_snapshot",
+            "split_position_lifecycle",
+            "manual_review_required",
+            "unresolved"
+          ]
+        },
+        "suspiciousMarkers": {
+          "type": "array",
+          "description": "Markers observed in source text that force needs_reconciliation or lower valueQuality.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "approx_marker",
+              "estimated_marker",
+              "needs_verification_marker",
+              "reference_value_marker",
+              "screenshot_basis_marker",
+              "backfilled_marker",
+              "missing_delivery_note_marker",
+              "missing_account_snapshot_marker",
+              "corrected_or_superseded_marker",
+              "dash_missing_value",
+              "summary_fill_mismatch",
+              "partial_exit_possible",
+              "holding_snapshot_not_realized"
+            ]
+          }
+        }
+      }
+    },
+    "crossValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "passed",
+            "passed_with_warnings",
+            "failed",
+            "blocked"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/crossValidationCheck"
+          }
+        },
+        "discrepancies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/discrepancy"
+          }
+        }
+      }
+    },
+    "qualityGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "humanReviewRequired"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft_only",
+            "needs_evidence",
+            "needs_reconciliation",
+            "review_ready",
+            "confirmed",
+            "rejected"
+          ]
+        },
+        "humanReviewRequired": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "passedRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "trainingWeight": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      }
+    },
+    "trainingBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "loraFactPolicy",
+        "allowedDestinations"
+      ],
+      "properties": {
+        "loraFactPolicy": {
+          "type": "string",
+          "enum": [
+            "no_raw_facts",
+            "references_only"
+          ],
+          "description": "LoRA-ready outputs must not contain raw broker rows, raw facts, or price rows."
+        },
+        "allowedDestinations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "eval",
+              "sft",
+              "preference",
+              "negative",
+              "adapter_candidate",
+              "none"
+            ]
+          }
+        },
+        "adapterCandidateWeight": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "valueQuality": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "approx",
+        "estimated",
+        "derived",
+        "needs_review",
+        "unknown"
+      ]
+    },
+    "fees": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commission": {
+          "type": "number"
+        },
+        "stampTax": {
+          "type": "number"
+        },
+        "transferFee": {
+          "type": "number"
+        },
+        "other": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      }
+    },
+    "fill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fillId",
+        "tradeDate",
+        "side",
+        "quantity",
+        "price"
+      ],
+      "properties": {
+        "fillId": {
+          "type": "string"
+        },
+        "tradeDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "tradeTime": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "buy",
+            "sell"
+          ]
+        },
+        "quantity": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "price": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "amount": {
+          "type": "number"
+        },
+        "fees": {
+          "$ref": "#/$defs/fees"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "valueQuality": {
+          "$ref": "#/$defs/valueQuality"
+        }
+      }
+    },
+    "priceRangeCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tradeDate",
+        "price",
+        "inRange"
+      ],
+      "properties": {
+        "tradeDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "price": {
+          "type": "number"
+        },
+        "low": {
+          "type": "number"
+        },
+        "high": {
+          "type": "number"
+        },
+        "inRange": {
+          "type": "boolean"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ref",
+        "role",
+        "valueQuality"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "raw_delivery_note",
+            "raw_daily_review",
+            "wiki_position_tracking",
+            "wiki_stock_page",
+            "market_data",
+            "broker_snapshot",
+            "manual_note"
+          ]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path + optional line or provider ref. Do not include secrets."
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "entry_fill",
+            "exit_fill",
+            "fee",
+            "account_daily_pnl",
+            "position_snapshot",
+            "summary_cross_check",
+            "hypothesis_context",
+            "entry_reason",
+            "exit_reason",
+            "attribution",
+            "market_validation",
+            "discrepancy_resolution"
+          ]
+        },
+        "reliability": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "valueQuality": {
+          "$ref": "#/$defs/valueQuality"
+        },
+        "note": {
+          "type": "string"
+        },
+        "riskFlags": {
+          "type": "array",
+          "description": "Source-level risk flags. Any material flag should lower valueQuality or trigger needs_reconciliation.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "position_tracking_summary_only",
+              "position_tracking_estimated",
+              "position_tracking_needs_verification",
+              "position_tracking_reference_value",
+              "position_tracking_screenshot_basis",
+              "position_tracking_backfilled",
+              "position_tracking_missing_delivery_note",
+              "position_tracking_missing_account_snapshot",
+              "position_tracking_corrected_or_superseded",
+              "position_tracking_partial_exit_possible",
+              "position_tracking_holding_snapshot_only",
+              "daily_review_no_broker_snapshot",
+              "delivery_note_missing",
+              "market_data_unavailable",
+              "source_conflict"
+            ]
+          }
+        }
+      }
+    },
+    "crossValidationCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "summary"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "warning",
+            "failed",
+            "blocked"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "discrepancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "severity",
+        "summary"
+      ],
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "preferredSource": {
+          "type": "string"
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "prefer_broker_delivery_note",
+            "prefer_position_tracking",
+            "prefer_daily_review",
+            "split_position_lifecycle",
+            "manual_review_required",
+            "unresolved"
+          ]
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

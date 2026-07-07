@@ -132,7 +132,7 @@ function renderSection(title, body) {
 function renderMarkdown(rows, meta) {
   const topicIndex = collectTopicIndex(rows)
   const frontmatter = {
-    source: `${DEFAULT_CONFIG.database}.${DEFAULT_CONFIG.schema}.${DEFAULT_CONFIG.table}`,
+    source: meta.source,
     pub_date: meta.pubDate,
     time_zone: DEFAULT_CONFIG.timeZone,
     record_count: rows.length,
@@ -223,7 +223,7 @@ async function loadDbConfig() {
     password: process.env.PG_SHIHAO_PASSWORD ?? localConfig.password,
     database: process.env.PG_SHIHAO_DATABASE ?? localConfig.database,
     schema: process.env.GANGTISE_MEETING_CLUES_SCHEMA ?? process.env.PG_SHIHAO_SCHEMA ?? localConfig.schema ?? DEFAULT_CONFIG.schema,
-    table: process.env.GANGTISE_MEETING_CLUES_TABLE ?? localConfig.gangtiseMeetingCluesTable ?? localConfig.table ?? DEFAULT_CONFIG.table,
+    table: process.env.GANGTISE_MEETING_CLUES_TABLE ?? localConfig.gangtiseMeetingCluesTable ?? DEFAULT_CONFIG.table,
   }
   const missing = []
   if (!config.host) missing.push("PG_SHIHAO_HOST")
@@ -281,6 +281,7 @@ async function main() {
   const dbConfig = await loadDbConfig()
 
   const meta = getRunTimestamps(readPubDateOverride())
+  meta.source = `${dbConfig.database}.${dbConfig.schema}.${dbConfig.table}`
   const rows = await fetchRows({ config: dbConfig, startAt: meta.startAt, endAt: meta.endAt })
   await ensureOutputDir()
   const markdown = renderMarkdown(rows, meta)

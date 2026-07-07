@@ -1,0 +1,160 @@
+{
+  "schema": "concept-canonical-rulings-v1",
+  "version": 1,
+  "updatedAt": "2026-06-13",
+  "notes": [
+    "Only sameAs rules are auto-routed by default.",
+    "mergeInto, childOf, and tradeSliceOf are first used as dry-run guidance unless mode is explicitly auto.",
+    "Keep fine-grained trading slices separate when they carry their own verification logic."
+  ],
+  "sameAs": [
+    {
+      "from": "wiki/概念/AI-PCB上游短缺体系.md",
+      "to": "wiki/概念/AI PCB上游短缺体系.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/AI-PCB油墨涨价链.md",
+      "to": "wiki/概念/AI PCB油墨涨价链.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/3DIC-EDA国产替代.md",
+      "to": "wiki/概念/3DIC EDA国产替代.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/Blank-Mask与先进制程多重曝光.md",
+      "to": "wiki/概念/Blank Mask与先进制程多重曝光.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/DeepSeek-API永久降价.md",
+      "to": "wiki/概念/DeepSeek API永久降价.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/SpaceX-IPO催化.md",
+      "to": "wiki/概念/SpaceX IPO催化.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/华为τ定律与Logic-Folding.md",
+      "to": "wiki/概念/华为τ定律与Logic Folding.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    },
+    {
+      "from": "wiki/概念/英伟达Rubin-VR200价值量拆解.md",
+      "to": "wiki/概念/英伟达Rubin VR200价值量拆解.md",
+      "mode": "auto",
+      "reason": "Same concept; hyphen/space title variant."
+    }
+  ],
+  "mergeInto": [
+    {
+      "from": "wiki/概念/电子铜箔产业链.md",
+      "to": "wiki/概念/HVLP铜箔.md",
+      "mode": "review",
+      "reason": "Early thin page; future high-end electronic copper foil evidence usually belongs to HVLP铜箔 unless it is broad copper-foil context."
+    },
+    {
+      "from": "wiki/概念/HVLP4铜箔产业链.md",
+      "to": "wiki/概念/HVLP铜箔.md",
+      "mode": "review",
+      "reason": "HVLP4 is a specification slice under HVLP铜箔; keep as review before auto-routing."
+    }
+  ],
+  "childOf": [
+    {
+      "child": "wiki/概念/HVLP铜箔.md",
+      "parent": "wiki/概念/铜箔.md",
+      "reason": "HVLP铜箔 has independent grade, customer, yield, processing-fee, order, and margin verification."
+    },
+    {
+      "child": "wiki/概念/载体铜箔.md",
+      "parent": "wiki/概念/铜箔.md",
+      "reason": "载体铜箔 is a process/material child concept, not a synonym of broad copper foil."
+    },
+    {
+      "child": "wiki/概念/PCB钻针产业链.md",
+      "parent": "wiki/概念/PCB.md",
+      "reason": "PCB drilling consumables carry separate order and price verification."
+    },
+    {
+      "child": "wiki/概念/PCB高温层压机设备瓶颈.md",
+      "parent": "wiki/概念/PCB.md",
+      "reason": "Equipment bottleneck evidence should stay separate from broad PCB context."
+    },
+    {
+      "child": "wiki/概念/存储上游材料链.md",
+      "parent": "wiki/概念/存储.md",
+      "reason": "Storage materials are a child chain with separate supply-demand evidence."
+    },
+    {
+      "child": "wiki/概念/液冷泵阀供需紧张.md",
+      "parent": "wiki/概念/液冷产业链.md",
+      "reason": "Pump and valve shortage evidence is a child verification line."
+    },
+    {
+      "child": "wiki/概念/光模块检测设备.md",
+      "parent": "wiki/概念/光模块产业链.md",
+      "reason": "Testing equipment has separate equipment-order validation."
+    },
+    {
+      "child": "wiki/概念/玻璃基板TGV产业链.md",
+      "parent": "wiki/概念/玻璃基板TGV与CoPoS先进封装.md",
+      "reason": "TGV is a child process chain under glass-substrate advanced packaging."
+    },
+    {
+      "child": "wiki/概念/SST固态变压器.md",
+      "parent": "wiki/概念/AIDC电源与SST.md",
+      "reason": "SST is a technology entity under AIDC power architecture."
+    }
+  ],
+  "tradeSliceOf": [
+    {
+      "slice": "wiki/概念/PCB铜箔涨价周期.md",
+      "parent": "wiki/概念/铜箔.md",
+      "reason": "Price-cycle page preserves trading context and should not be merged into the material page."
+    },
+    {
+      "slice": "wiki/概念/存储超级周期与鱼尾特征.md",
+      "parent": "wiki/概念/存储.md",
+      "reason": "Cycle/tail-risk framing is a trading slice."
+    },
+    {
+      "slice": "wiki/概念/MLCC涨价周期.md",
+      "parent": "wiki/概念/MLCC超级周期.md",
+      "reason": "Price-cycle page should remain independent from broader MLCC cycle framing."
+    },
+    {
+      "slice": "wiki/概念/光模块高低切换警示.md",
+      "parent": "wiki/概念/光模块产业链.md",
+      "reason": "High-low rotation warning is a trading-risk slice."
+    }
+  ],
+  "routingHints": [
+    {
+      "match": "HVLP4|HVLP-4|高端电子铜箔|RTF",
+      "path": "wiki/概念/HVLP铜箔.md",
+      "reason": "High-end copper foil validation should prefer HVLP铜箔."
+    },
+    {
+      "match": "铜箔全链|锂电铜箔|普通铜箔|铜箔总账",
+      "path": "wiki/概念/铜箔.md",
+      "reason": "Broad copper foil context belongs to the parent ledger."
+    },
+    {
+      "match": "SST|固态变压器|800V HVDC|AIDC电源",
+      "path": "wiki/概念/AIDC电源与SST.md",
+      "reason": "AIDC power architecture should prefer the AIDC电源与SST page."
+    }
+  ]
+}

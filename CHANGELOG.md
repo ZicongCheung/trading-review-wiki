@@ -4,6 +4,350 @@
 
 ---
 
+## Unreleased
+
+暂无。
+
+---
+
+## v0.17.0-section-patch-ledger-ingest — 2026-07-07
+
+> 摄入系统 v2 第一批:章节补丁更新、判断账本、Embedding 语义路由。三个能力全部 opt-in,不加 flag 时与 v0.16.4 行为完全一致。实测单篇摄入从约 1 小时降到 27 分钟,更新页输出量降为整页重写的 1/4~1/5。设计与九项决策见 `docs/提案-2026-07-07-时间线账本与供数架构-v6.md`,摄入机切换步骤见 `docs/摄入机升级指南-v0.17-章节补丁与账本摄入.md`。
+
+- **章节化页面模型**:新增 `internal/page-sections.mjs`,frontmatter + `##` 章节树无损解析/序列化、章节锚定补丁(replace/append/insert/update_frontmatter,禁止删章节)、`<!-- AUTO:name -->` 自动区块幂等注入、页级+章节级 visibility 过滤。
+- **`api-run --page-write-mode patch`**:update 页由模型输出章节补丁(逐行字符串数组格式,带控制字符 JSON 修复),程序本地应用,未触及章节字节级保留;每页失败独立回退整页生成;补丁原文存 `files/patch-*.md`;manifest 记录 `pageWriteMode`/`pagePatch` 统计;`finalize`/`batch-run` 兼容。
+- **判断账本 Judgments v1**:新增 `data/facts/judgments.jsonl` + manifest `judgmentWrites` 独立写入区域,记录 thesis/expectation/lesson/stance 四类"当时的理解",held/revised/invalidated/expired 生命周期,确定性 `jg_` id 去重、supersedes 修正链、apply dry-run 展示与 fatal 校验、`judgments.index.json` 按实体聚合;`api-run --judgments` 在 Stage 2 启用判断规划;stance 默认 `visibility: personal`。
+- **Embedding 语义路由**:新增 `embeddings build|status` 命令维护 `.llm-wiki/embeddings/wiki-pages.json` 增量索引(按页面文本 hash 复用);`prepare/api-run/batch-run --embedding-routing` 把整源+逐 segment 语义命中合并进候选页;`apply --write` 触及被索引页后自动增量刷新索引;索引/凭证缺失或 API 失败一律降级为词法候选,不阻断摄入;凭证优先级 `--embedding-api-key` > `OPENAI_API_KEY` > Keychain `trading-wiki-openai-api`。
+- **存量 frontmatter 债降级**:apply 校验时 update 页改动前后同样存在的 fatal frontmatter 问题降级为 warning 并标 `preExisting: true`,只拦新引入的非法值。
+- **frontmatter v6 字段**:可选 `entity_key`、`visibility`(team/personal),值非法仅软警告,存量页零影响。
+- **测试**:新增 page-sections / ingest-page-patch / judgments / embeddings 四个套件共 49 个用例,覆盖无损往返、补丁回退、账本去重与修正链、索引增量、路由降级、存量债降级;`npm test` 1004/1006(2 个失败为既有环境依赖用例)。
+
+### 更新文件(Files)
+
+- `scripts/codex-ingest/internal/page-sections.mjs` / `page-sections.test.mjs`(新增)
+- `scripts/codex-ingest/internal/ingest-page-patch.mjs` / `ingest-page-patch.test.mjs`(新增)
+- `scripts/codex-ingest/internal/judgments.mjs` / `judgments.test.mjs`(新增)
+- `scripts/codex-ingest/internal/embeddings.mjs` / `embeddings.test.mjs`(新增)
+- `scripts/codex-ingest/internal/ingest.mjs`、`internal/knowledge.mjs`、`ingest/index.mjs`
+- `scripts/codex-ingest/cli/index.mjs`、`cli/args.mjs`、`cli/help.mjs`
+- `scripts/codex-ingest-lib.test.mjs`
+- `docs/提案-2026-07-07-时间线账本与供数架构-v6.md`(新增)
+- `docs/摄入机升级指南-v0.17-章节补丁与账本摄入.md`(新增)
+
+---
+
+## v0.16.4-research-cockpit-alpha-feed — 2026-06-28
+
+> Research Cockpit Alpha Feed：把首页从功能面板进一步收敛成个人投研待办箱，强调 10 秒内看到今日优先信号、影响假设、建议动作和交易含义。
+
+- **版本元数据升级**：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 升级到 `0.16.4`，用于承接 Alpha Feed 极简首页和保守状态判断改进。
+- **Alpha Feed 首页骨架**：Research Cockpit 默认首屏改为 3-5 条今日优先待办，并在顶部摘要展示 `今日优先 / 需要 Ask / 建议确认 / 已折叠噪声`，弱化工程日志和后台细节。
+- **卡片决策信息固定化**：待处理卡片固定回答“这是什么信号、影响哪条假设、建议动作、交易含义、为什么重要”，操作收敛到 `Ask / 确认 / 忽略`，让基金经理日常处理路径更直接。
+- **假设质量门**：AI 并发发现假设和候选新假设增加中观机制筛选，太宽的主题和太细的单条消息默认折叠，合格假设必须具备产业方向、细分环节、变化机制和可跟踪证据。
+- **增量信源路由更清楚**：微信聊天、研报新闻、Gangtise/OpenClaw 产业链复盘被分成不同信源类型，UI 不再把所有新增资料都显示成“微信文档”，扫描结果保留 sourceType 和来源解释。
+- **L0-L3 信号分层**：卡片新增 `L0 新催化 / L1 二次确认 / L2 市场反馈 / L3 硬证据` 口径；提醒可以积极，但状态建议保持保守，普通新催化不会把假设直接推到 actionable。
+- **假设轨迹 Timeline 口径**：事件输出补足 `sourceType / signalStrength / statusBefore / suggestedStatus / tradingImplication` 等字段，同源同类信号聚合展示，细碎消息优先成为 hypothesis event，而不是新假设。
+- **Ask 深挖可见性补强**：点击 Ask 后卡片、顶部状态和结果区都会反馈运行中、缓存命中、失败原因和结果位置；结果区先展示结构化摘要，再保留完整六段回答和来源。
+- **安全边界保持**：本版仍不自动写正式 `wiki/**`、不改旧 `raw/**`、不触发真实交易；自动扫描只写 `.llm-wiki/wechat-inbox/**`，状态更新必须人工确认。
+
+### 更新文件（Files）
+
+- `src/components/dashboard/__tests__/research-cockpit-helpers.test.ts`
+- `src/components/dashboard/research-cockpit-helpers.ts`
+- `src/components/dashboard/research-cockpit-view.tsx`
+- `package.json`
+- `package-lock.json`
+- `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`
+- `src-tauri/tauri.conf.json`
+- `CHANGELOG.md`
+- `docs/research-cockpit-operation.md`
+- `docs/更新报告-2026-06-28-ResearchCockpit-v0.16.4-alpha-feed.md`
+
+### 验证（Validation）
+
+- `npm test -- --run src/components/dashboard/__tests__/research-cockpit-helpers.test.ts --testTimeout 60000` 通过：`251 passed`。
+- `npm test -- --run scripts/codex-ingest-lib.test.mjs --testTimeout 60000` 通过：`295 passed`。
+- `npm run build` 通过；仅保留既有 Vite dynamic import / chunk size 警告。
+- `cargo test --manifest-path src-tauri/Cargo.toml research_cockpit -- --nocapture` 通过：`6 passed`，仅保留既有 Rust warning。
+- `git diff --check` 通过。
+
+---
+
+## v0.16.3-research-cockpit-pm-workbench — 2026-06-25
+
+> Research Cockpit 日常投研工作台：把新增资料、Wiki 表头、金融实体词、假设状态机、待处理卡片和 Ask 深挖串成基金经理每天可用的信息流。
+
+- **版本元数据升级**：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 升级到 `0.16.3`，用于承接 Research Cockpit 基金经理日常工作台改进。
+- **舆情待处理卡降噪**：Research Cockpit 首页继续收敛到 `AI 并发找假设 -> 假设表跟踪 -> 微信/新增资料扫描 -> 待处理卡片 -> Ask 深挖 -> 人工确认状态`，待处理区按“今天优先 / 叙事扩散 / 候选新假设”等决策分层聚合，减少同源重复卡和无意义日期/编号候选。
+- **状态机合法转移**：新增 Hypothesis 状态迁移守卫，扫描只给建议，确认状态时校验 `seed / watching / strengthening / actionable / priced_in / divergent / disconfirmed / archived` 的合法路径，防止噪声舆情把假设直接推过头。
+- **source filter 真正生效**：`hypothesis watch --source ...` 贯通 CLI 和 Tauri action，扫描单个微信文档、研报新闻目录或 Gangtise 主题目录时只处理被选中的来源，不再被全量 inbox 干扰。
+- **Gangtise 专用 parser**：新增 Gangtise/OpenClaw 产业链复盘解析路径，把主题、细分、公司、催化和来源摘要拆成可路由信号，避免把产业链复盘当作普通微信文本。
+- **Wiki 表头和金融实体复用**：Watchtower / hypothesis discover / update-from-article 可通过 `--finance-entity-audit-roots` 或 `TRADING_WIKI_FINANCE_ENTITY_AUDIT_ROOTS` 复用 live wiki 的 SAG entity audit 表，将公司、股票、产品线、技术路线、催化、风险因子等金融关键词接入待处理卡和候选假设排序。
+- **Ask 深挖反馈更明确**：单条假设 Ask 默认跳过额外 LLM source-router，直接复用已有 `ask --agentic` 检索链路；UI 增加 Ask 运行中、缓存复用、结果定位、结构化摘要、证据强度和下一步动作提示，避免“点了 Ask 不知道回答在哪”。
+- **多源新增资料入口**：Research Cockpit 来源预设扩展到 `raw/微信聊天`、`raw/研报新闻`、`raw/openclaw数据/产业链复盘/gangtise_themes`，UI 明确每类来源的用途，新增资料扫描只生成建议，不自动确认状态。
+- **Tauri 固定动作保持安全**：Research Cockpit 的固定 allowlist 动作会在可用时自动附加默认 finance entity audit roots，但仍不开放前端任意 shell；自动扫描只写 `.llm-wiki/wechat-inbox/**`，状态更新仍需人工确认。
+- **SAG 同步稳态修复**：`sag-sync` 对 pending 队列按路径去重，同步全树时跳过已 pending 文件，并在文档重写时同时归档同路径旧文档与本地 state 记录的旧 documentId，降低重复同步和旧索引残留。
+- **测试覆盖扩展**：补充 Research Cockpit helper 与 hypothesis CLI 测试，覆盖金融实体关键词、待处理卡聚合、Ask 结果定位、缓存提示、状态确认反馈和 noisy signal 过滤。
+- **安全边界保持**：本版仍不自动写正式 `wiki/**`、不改旧 `raw/**`、不触发真实交易；假设状态、events、alerts 只有人工确认后才写入 `.llm-wiki/**`。
+
+### 更新文件（Files）
+
+- `scripts/codex-ingest-lib.test.mjs`
+- `scripts/codex-ingest/cli/help.mjs`
+- `scripts/codex-ingest/cli/index.mjs`
+- `scripts/codex-ingest/internal/hypothesis.mjs`
+- `src-tauri/src/commands/research_cockpit.rs`
+- `src/components/dashboard/__tests__/research-cockpit-helpers.test.ts`
+- `src/components/dashboard/research-cockpit-helpers.ts`
+- `src/components/dashboard/research-cockpit-view.tsx`
+- `README.md`
+- `CHANGELOG.md`
+- `docs/更新报告-2026-06-25-ResearchCockpit-v0.16.3-pm-workbench.md`
+
+### 验证（Validation）
+
+- `npm test -- --run src/components/dashboard/__tests__/research-cockpit-helpers.test.ts --testTimeout 60000` 通过：`246 passed`。
+- `npm test -- --run scripts/codex-ingest-lib.test.mjs --testTimeout 60000` 通过：`295 passed`。
+- `npm run build` 通过；仅保留既有 Vite dynamic import / chunk size 警告。
+- `cargo test --manifest-path src-tauri/Cargo.toml research_cockpit -- --nocapture` 通过：`6 passed`，仅保留既有 Rust warning。
+- `git diff --check` 通过。
+
+### v0.16.2-research-os-hard-source-review 主链增强
+
+- **版本元数据升级**：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 升级到 `0.16.2`，用于承接 v0.16 ResearchOS 多 Agent 主链增强。
+- **Hypothesis Evidence Link 队列**：`research-os agent status/plan/review` 现在会优先暴露 `hypothesis_evidence_link_review`，把 EvidenceResult -> Hypothesis 的低置信映射列入 HumanGate 队列，避免证据已补但假设反馈链断开。
+- **硬源审计统一化**：新增共享 `source-integrity` 审计口径，区分 `native_official_disclosure`、`web_official_pdf`、`web_official_pdf_via_web_search`、`web_official_pdf_after_zero_result_tool_state`、`structured_data_only`、`web_lead_only`、`needs_source_refs`。
+- **CNINFO/交易所硬源优先级**：原生 `cninfo/sse/szse:announcement#...` refs 在 review queue 中排在 Web PDF/Tavily 线索之前；`tool-state:cninfo#announcement:results=0` 不再被误判为硬源。
+- **Review dry-run 可审计**：`hypothesis evidence-link-review` dry-run 和待写入 link 都会输出 `sourceIntegrity`，人工确认时可直接看到硬源状态、source profile、官方公告 refs、Tavily 是否参与、零结果官方工具态等信息。
+- **真实状态更新**：当前 live 项目已形成 `73` 条 trajectories、`806` 个 Benchmark cases、`376` 个 LoRA-ready candidates、`29` 个 trainable 样本、`2` 个 confirmed real profitable execution 样本、`12` 个 paper-trade-agent written candidates、`99` 条 hypothesis evidenceFeedback。
+- **文档刷新**：更新 `docs/Trading-Review-Wiki-功能全景与演进路线.md`，补齐 v0.13 Evidence Runner、v0.14 Hypothesis Engine、v0.15 Paper Trade Agent、v0.16 Codex-orchestrated Agent 与 v0.16.2 hard-source review 的当前口径。
+- **安全边界保持**：仍默认 dry-run，写入只进 `.llm-wiki/**`，不写正式 `wiki/**`、不改旧 `raw/**`、不触发真实交易，LoRA-ready 不保存原始事实、价格行或交割单行。
+
+### v0.16.1-research-os-mainline-closed-loop 主链准备
+
+- **版本元数据升级**：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 同步到 `0.16.1`，用于承接 v0.13-v0.16 训练飞轮闭环进入主链。
+- **Research OS Agent 编排**：`research-os agent status/plan/review/step/verify` 形成 Codex-supervised CLI/artifact 多 Agent 调度层，保持 dry-run first、HumanGate explicit 和 `.llm-wiki/**` 写入边界。
+- **真实交易 execution-result 闭环**：新增 `research-os-execution-result-v1` schema、文档和测试，支持从交割单、日复盘、position-tracking 与 Tushare 市场路径交叉验证真实交易执行结果，并回流 stock-feedback trajectory / Benchmark / LoRA-ready。
+- **真实收益与 paper trade 分权重**：真实 confirmed profitable execution result 与 paper trade profitable 样本在 curriculum 中分来源、分权重；paper trade 不冒充真实收益，LoRA-ready 不保存交割单行、价格行或原始事实。
+- **Evidence Runner Web 补证升级**：Tavily/Web adapter 增加官方源、媒体源、门户源、未知线索分级；`official_primary` 可提高 sourceQuality，门户/乱码页进入 review 或降权。
+- **字段级证据命中门**：Web 补证不再把 top snippet 盲目填满所有 targetFields；`order/customer/shipment/revenue/annual_report/announcement` 必须各自命中关键词，防止年报摘要被误判为完整基本面兑现证据。
+- **主链交接文档**：新增 `docs/更新报告-2026-06-21-ResearchOS-v0.16.1-mainline-closed-loop.md` 与 `docs/发布说明-v0.16.1-main合并准备.md`，集中记录已闭合链路、未闭合缺口、验证包和合并建议。
+- **当前缺口明确化**：保留 `pendingReviews=42`、`executionResultsNeedsReconciliation=17`、`paperTradeAgentWrittenCandidates=0`、`hypothesis evidenceFeedback=0`、CNINFO adapter unavailable/open、v0.17 UI 操作台未完成等未闭合项，作为合并后继续推进清单。
+
+---
+
+## v0.15.0-research-os-loop — 2026-06-21
+
+> Research OS 主链收口：把 v0.13 Evidence Runner、v0.14 Hypothesis Engine 和 v0.15 Paper Trade Agent 合并成“证据 -> 假设 -> 模拟交易 -> 收益归因 -> Benchmark -> LoRA-ready”的可审计训练飞轮。
+
+### v0.15.0-paper-trade-agent 收口
+
+- **Paper Trade Agent 候选层**：新增 `stock-feedback paper-trade-agent candidates`，从 stock-feedback trajectory 与 hypothesis evidence-feedback 生成 `rule_baseline / llm_discretionary` 双轨 paper trade 候选。
+- **as-of 截断与证据请求**：候选强制携带 `asOfDate`、`evidenceCutoff.noFutureData=true`、entry/exit plan、position sizing、invalidation condition、expected catalyst 和 Tushare/price SQL marketEvidenceRequest。
+- **训练飞轮 UI**：模拟交易闭环面板新增 Agent 候选、预览/写入、使用 Agent、补入口价入口；补入口价复用现有 Tushare 探测和 paper trade record 证据门。
+- **Paper Trade 结算队列**：`paper-trade status` 与训练飞轮 status/ledger 摘要新增只读 `settlementQueue` 和“待结算”指标，优先提示 open paper trades 进入现有 settle 复盘面板，不自动结算、不写真实交易。
+- **Paper Trade 结算刷新计划**：settlement result / manifest 新增 `artifactRefreshPlan`，训练飞轮 follow-up 展示轨迹重建、Benchmark、人审、LoRA-ready 与 verify 的顺序和人审阻塞点。
+- **Paper Trade 重载审计**：训练飞轮 status / UI 新增 `settlementRefreshAudit` 和“待刷新”指标，重载后仍能定位已结算 paper trade 缺失轨迹、Benchmark、人审或 LoRA-ready 覆盖的下一步。
+- **Paper Trade LoRA-ready 闭环归零**：LoRA-ready `candidateRefs` 显式携带 `paperTradeId`，人审低权重 paper adapter 完成 Benchmark / LoRA-ready 后，`settlementRefreshAudit.pending` 可归零。
+- **Benchmark / LoRA-ready**：Benchmark 增加 `paper_trade_agent_candidate` cases；LoRA-ready manifest 增加 `paperTradeAgentCurriculum`，paper trade 仍默认低权重且不得冒充真实收益。
+- **Verify 扩展**：`stock-feedback verify` 校验 Paper Trade Agent candidate/manifest 的 schema、paper ledger 边界、as-of 截断、计划字段和 PEFT 边界。
+- **更新报告**：新增 `docs/更新报告-2026-06-21-ResearchOS-v0.15.0-paper-trade-agent.md`。
+
+### v0.14.0-hypothesis-engine 收口
+
+- **EvidenceResult 回流 Hypothesis**：新增 `hypothesis evidence-feedback`，读取 v0.13 evidence task/result，并生成 hypothesis evidence list、direction、Evidence Score 与 training flywheel routes。
+- **Hypothesis Quality Gate 正式化**：固化 `falsifiableConditions / coreDrivers / marketMispricing / sourceRefs`，并提供 numeric/date/text contains 可证伪触发检测。
+- **Watchtower / HumanGate**：只生成状态迁移推荐，不自动修改正式 hypothesis；用户确认后才写 hypothesis event。
+- **Post-Mortem 草稿**：对 `archived / disconfirmed / priced_in` 终态假设生成复盘草稿，供训练飞轮沉淀失败归因和决策策略。
+- **Research Cockpit UI**：假设详情加入 Hypothesis Engine 面板，展示质量门、证据时间线、分数、Watchtower candidate、人审推荐和 post-mortem 入口。
+- **更新报告**：新增 `docs/更新报告-2026-06-21-ResearchOS-v0.14.0-hypothesis-engine.md`。
+
+### v0.13.0-evidence-runner 薄切片
+
+- **Evidence Task 数据层**：新增 `stock-feedback-evidence-task-v1`、`stock-feedback-evidence-result-v1`、`stock-feedback-evidence-run-v1`、`stock-feedback-evidence-dlq-v1`，写入边界固定在 `.llm-wiki/stock-feedback/**`。
+- **Evidence Runner CLI**：新增 `stock-feedback evidence-task create/list/show`、`run-task-queue`、`evidence-result list/review`、`source-status`、`dlq list/retry/discard`。
+- **轻量质量门**：每个 EvidenceResult 输出 fieldCompleteness、valueValidity、timeliness、formatConsistency、sourceReliability、crossValidation 和 overallConfidence。
+- **HumanGate 首片**：高置信无冲突结果可 `auto_ready`，冲突数据进入 `awaiting_review`，无可用证据进入 DLQ；approve 必须有可采信 source/tool evidence refs。
+- **Tushare adapter 首片**：Evidence Runner 在无 mock/manual refs 时优先尝试 Tushare market/financial source；缺 token 或接口失败时进入可审计 failure/DLQ 路径，不输出密钥。
+- **Training Flywheel Evidence Queue**：训练飞轮新增轻量 Evidence Queue 面板，可看 pending/running/awaiting_review/completed/DLQ/source health，查看 task/result 详情并执行 result review、DLQ retry/discard。
+- **Tauri 固定 allowlist**：新增 evidence-task、run-task-queue、evidence-result、source-status、dlq 相关固定 action；仍不开放任意命令。
+- **Hypothesis quality-check 薄切片**：新增 `hypothesis quality-check`，检查 falsifiableConditions、coreDrivers、marketMispricing、sourceRefs，只输出推荐和 EvidenceTask 草案，不自动改正式 Hypothesis 状态。
+- **Verify 接入**：`stock-feedback verify` 会校验证据任务、结果、运行记录和 DLQ 的 schema、写入边界、证据引用和原始事实泄漏。
+- **范围边界**：本片仍不做完整 Hypothesis V2 六门控、不自动改正式 Hypothesis 状态、不接 Temporal/LangGraph/Mem0，不触发真实交易。
+- **更新报告**：新增 `docs/更新报告-2026-06-21-ResearchOS-v0.13.0-evidence-runner.md`。
+- **主链发布说明**：新增 `docs/发布说明-v0.15.0-research-os-loop.md`，并将 package、Tauri 和 Cargo 版本统一升级到 `0.15.0`。
+
+---
+
+## v0.12.1-research-os-training-flywheel-v2 — 2026-06-20
+
+> Research OS checkpoint：把 Research Cockpit、训练飞轮、Paper Trade、Tushare 外部证据和 Deep Research CLI 合并成主链版本。本版重点不是自动交易，而是让“自提问 -> 股票验证 -> 模拟/真实收益证据 -> 人工 review -> Benchmark -> PEFT-ready 候选”形成可审计闭环。
+
+### 新功能（Feature）
+
+- **训练飞轮独立入口**：左侧新增“训练飞轮”，首屏展示今日轨迹、待补证、可进入训练、priced-in 风险、失败样本和模拟交易状态。
+- **`stock-feedback` 命令族**：新增/打通 `status`、`build-trajectories`、`list`、`review-queue`、`review`、`collection-task`、`collection-result`、`bench`、`export-lora-ready`、`verify`、`paper-trade status/record/settle`。
+- **股票反馈轨迹与 Benchmark**：新增 `stock-feedback-trajectory-v1`、`stock-validation-benchmark-v1`、review event、collection result、LoRA-ready manifest 和 benchmark batch。
+- **Paper trade 模拟账本**：支持 `rule_baseline` 与 `llm_discretionary` 双轨记录，结构化保存 `asOfDate`、入场/出场、收益率、最大回撤、持有天数、仓位纪律、卖出理由和证据引用。
+- **Paper trade review 分流**：新增 `approve_paper_adapter_candidate`，盈利模拟交易只有人审后才能作为低权重 adapter 候选，不等同真实盈利样本。
+- **Tushare 外部证据接入**：新增 `data-source tushare-probe` 与训练飞轮数据源健康状态，支持行情、日线基础、指数、涨停/连板、龙虎榜、机构、游资、热榜等证据探针。
+- **自动市场证据窗口**：paper trade record 可从 Tushare 生成 entry price、相对强弱、换手/成交额变化、承接、回撤和微观结构 evidence refs。
+- **Deep Research CLI**：新增 `deep-research` 命令，复刻应用端 Deep Research 面板：Tavily/Web 检索 + 本地 ask 检索 + LLM synthesis，默认只写 `.llm-wiki/deep-research/**`。
+- **训练飞轮教学材料**：新增新手操作说明、截图资产、Word 文档、PPT，以及系统功能全景与演进路线文档/PPT/PDF。
+
+### 改进（Improvement）
+
+- **质量门按训练目标拆分**：预期交易、基本面兑现、priced-in 风险、失败归因和证据不足分开处理，避免用基本面证据一刀切压低“市场先炒预期”样本。
+- **收益反馈可视化**：UI 展示 `realizedPnlPct`、`maxDrawdownPct`、`holdingDays`、profit outcome、profit credit、entryTiming、positionSizing、exitTiming，并提示正向收益、执行风险负样本和失败预期负样本的分流去向。
+- **Adapter curriculum 和 Pattern radar**：新增来源集中度、人工权重、缺口雷达、补样本任务、LoRA-ready 刷新提示，以及 paper trade 低权重候选队列。
+- **Tauri allowlist 固定化**：训练飞轮只调用固定 action，不开放任意命令。
+- **Research Cockpit 信息流补强**：待处理区新增“今天先手”焦点卡，把 `确认状态 / Ask 深挖 / Ask 预检 / 加入跟踪` 的主操作上移到第一眼位置；摘要条保留为只读指标区，减少重复按钮。
+- **Wiki 表头进入日常决策**：焦点卡和待处理卡显式展示命中的 wiki 框架表头，包括 `status`、`confidence`、`momentum`、`catalysts`，让微信舆情能接回“活跃框架 / 置信度 / 动量 / 催化变量”后再判断。
+- **待处理反馈更明确**：新增信息流路径 `来源 -> 框架 -> 对象 -> 动作`、忽略成功提示、状态确认成功提示和 Ask 结果跳转提示，降低“点了不知道发生什么”的交互成本。
+- **Deep Research 写入门控**：`--write` 才保存 `wiki/queries/**`，`--ingest` 必须搭配 `--write`，`--apply-ingest` 必须搭配 `--ingest`。
+
+### 安全边界（Safety）
+
+- collection-result 确认样本必须有 evidence refs；人工摘要不能替代 sourceRefs、price SQL 或 tool state。
+- LoRA-ready 不保存原始事实、公告正文、价格行或交易明细，只保存行为、技能、工具习惯和决策策略。
+- 自动写入仍限制在 `.llm-wiki/**` 和既有训练导出路径，不自动写正式 `wiki/**`、不改 `raw/**`、不触发真实交易。
+- Paper trade 写入仅限 `.llm-wiki/stock-feedback/paper-trades/**`，强制 `ledgerKind=paper_trade`，不能冒充真实交易 ledger。
+- Paper trade 必须声明 `asOfDate` 与 `evidenceCutoff.noFutureData=true`，用于约束模拟交易只能使用当时可见证据。
+- Deep Research 默认只写 `.llm-wiki/deep-research/**`；正式 query page 和 staged ingest 都需要显式命令门。
+- Tushare / Tavily 等外部 token 通过 Keychain、环境变量或命令行参数读取，manifest 和输出不保存密钥。
+
+### 文档（Docs）
+
+- 新增 [训练飞轮新手操作说明](docs/training-flywheel-new-user-guide.md)。
+- 新增 [Research OS v0.12.1 主链整合更新报告](docs/更新报告-2026-06-20-ResearchOS-v0.12.1.md)。
+- 更新 [Trading Review Wiki 功能全景与演进路线](docs/Trading-Review-Wiki-功能全景与演进路线.md)。
+- 新增 `outputs/training-flywheel-new-user-guide.docx` 和 `outputs/training-flywheel-new-user-guide.pptx`。
+- 更新 `outputs/trading-review-wiki-function-roadmap.pptx` 和 `outputs/trading-review-wiki-function-roadmap.pdf`。
+- 更新 [Research Cockpit 操作说明](docs/research-cockpit-operation.md)，补充“今天先手”、Wiki 表头、信息流路径和 Ask 深挖反馈的读法。
+- 主链不保留 2026-06-20 的逐步迭代复盘散文档，已合并为一份整合更新报告。
+
+### 验证（Validation）
+
+- `npm --silent exec vitest -- run scripts/codex-ingest-lib.test.mjs -t "codex ingest deep-research"` 通过：`2 passed`。
+- `npm --silent exec vitest -- run scripts/codex-ingest-lib.test.mjs -t "codex ingest CLI structure" --testTimeout 60000` 通过：`7 passed`。
+- `npm --silent exec vitest -- run scripts/codex-ingest-stock-feedback-paper-trade.test.mjs scripts/codex-ingest-data-source.test.mjs scripts/codex-ingest-cli-args.test.mjs src/components/training/__tests__/training-flywheel-view.test.ts` 通过：`154 passed`。
+- `npm --silent exec vitest -- run src/components/dashboard/__tests__/research-cockpit-helpers.test.ts` 通过：`105 passed`。
+- `cargo test research_cockpit --lib` 通过：`4 passed`，仅保留既有 Rust warning。
+- `npm --silent run codex:ingest -- stock-feedback verify --project /Users/jiegege/Desktop/杰杰杰` 返回 `status=ok`，当前检查到 `49` trajectories、`145` benchmark cases、`114` LoRA-ready candidates、`6` manifests、`1` paper trade。
+- `npm run build` 通过；仅保留既有 Vite dynamic import / chunk 警告。
+- `git diff --check` 通过；真实 Tushare token 与旧假密钥字符串未进入仓库。
+- 已知后续重点：补真实交易账本、扩大 profitable / priced-in / fundamental closure 样本密度、把 paper trade 子 Agent 自动化。
+
+---
+
+## v0.12.0-research-cockpit-lite — 2026-06-19
+
+> Research Cockpit Lite checkpoint：把前一版的多智能体、假设库、微信增量和 Autoresearch 工程底座，收敛成基金经理每天可用的“舆情驱动假设待办系统”。本版重点是更简单的默认交互：先有假设，再扫描微信新增，生成待处理卡片，人工确认或 Ask 深挖，最后把状态和来源沉淀为假设记忆。
+
+### 新功能（Feature）
+
+- **Research Cockpit Lite 每日工作台**：新增独立 `ResearchCockpitView` 和 Tauri allowlist action，首屏聚焦 `AI 并发找假设`、`扫描微信新增`、`自动跟踪`、`刷新`，默认隐藏自训练、proposal、autoresearch、补证和实验账本等高级功能。
+- **微信增量观察**：新增 `wechat-inbox` 文件收件箱、raw 微信文档导入、去重、processed inbox、状态统计和候选来源列表。支持选择 `raw/微信聊天/YYYY-MM-DD.md` 或最近修改文件作为增量信号源。
+- **假设 Watchtower 信号路由**：`hypothesis watch` 支持 `wechat_incremental` 来源，输出信号类型、命中假设、建议状态、证据摘要、来源引用和候选新假设；扫描默认不改真实假设状态。
+- **LLM 小批量复核**：新增 `--llm-review auto|off|force` 路径，只对规则筛出的少量候选做 LLM 复核，避免把高频微信全文直接送模型。
+- **假设状态确认**：新增 `hypothesis status-update --write`，只有人工确认后才更新 `.llm-wiki/hypotheses/**` 并写入 `.llm-wiki/hypothesis-events/**`。
+- **假设 Ask 深挖**：新增 `hypothesis ask`，复用现有 agentic ask 输出关联股票、直接受益、利好排序、当前阶段、最大缺口、一句话结论和完整六段回答；修复此前只返回 context、不生成 answer 的问题。
+- **高级实验室递归入口**：默认折叠但保留 `闭环状态`、`dry-run 闭环`、`策略建议 dry-run/write`、`自训练计划 dry-run/write`、阶段进度、阶段输出、alerts、候选假设、实验账本、证据缺口和自训练待审动作。
+- **补证 LLM 工作流**：新增/打通 `hypothesis supplement-draft` 和 `hypothesis supplement`，支持把路演、表格、公告、调研纪要或 IMA/CNINFO/企查查/Tushare 搜集指令先整理成补证草稿，再写入 `.llm-wiki/hypothesis-supplements/**` 并触发 Watchtower 扫描。
+- **SAG/双机同步辅助**：新增 `sag-sync`、`machine-role-preflight`、`sync-live-corpus-snapshot` 脚本和 npm 命令，为新旧机器分工、检索同步和开发预检保留工程入口。
+
+### 改进（Improvement）
+
+- **默认交互降噪**：待处理卡片不再展示长证据缺口列表，而是优先展示“为什么重要、影响哪条假设、建议状态、现在动作”；日期、编号、弱标题和泛词候选被过滤。
+- **微信扫描流程可见化**：前端显示阶段摘要、运行锁、自动跟踪状态、待处理数量、命中数量和错误状态，避免按钮空转。
+- **Ask 深挖展示增强**：界面新增 `Ask 深挖进行中`、缺 answer 提示、结构化摘要卡和默认展开的完整六段回答区域。
+- **日常区/高级区分层**：首页只服务“今天有什么新信号会改变假设”，高级实验室承接递归自训练、proposal、补证和审计复盘，避免把日常决策和工程控制混在一起。
+- **文档和教学材料补齐**：新增 Research Cockpit 操作说明、系统功能全景、双机同步边界、问题扩展 prompt、检索质量判断规则，以及新手操作 PPT/PDF。
+
+### 安全边界（Safety）
+
+- 微信自动扫描只写 `.llm-wiki/wechat-inbox/**`。
+- 假设状态、events、alerts 必须人工确认后才写入。
+- 不写正式 `wiki/**`、不改 `raw/**`、不触发真实交易、不自动应用 prompt 或策略。
+- Tauri 前端只调用固定 allowlist 动作，不允许拼接任意 shell。
+- 外部文本进入 UI 和 LLM 前按不可信输入处理；输出和 manifest 继续脱敏。
+
+### 更新文件（Files）
+
+- `src/components/dashboard/research-cockpit-view.tsx`
+- `src/components/dashboard/research-cockpit-helpers.ts`
+- `src/components/dashboard/__tests__/research-cockpit-helpers.test.ts`
+- `src/commands/research-cockpit.ts`
+- `src-tauri/src/commands/research_cockpit.rs`
+- `scripts/codex-ingest/internal/hypothesis.mjs`
+- `scripts/codex-ingest/cli/index.mjs`
+- `scripts/codex-ingest-lib.test.mjs`
+- `scripts/sag-sync.mjs`
+- `scripts/machine-role-preflight.mjs`
+- `scripts/sync-live-corpus-snapshot.mjs`
+- `docs/research-cockpit-operation.md`
+- `outputs/research-cockpit-new-user-tutorial.pptx`
+- `outputs/research-cockpit-new-user-tutorial.pdf`
+
+### 验证（Validation）
+
+- `npm test -- --run scripts/codex-ingest-lib.test.mjs --testTimeout 60000` 通过。
+- `npm run build` 通过；仅保留 Vite 对 chunk/dynamic import 的既有警告。
+- `git diff --check` / `git diff --cached --check` 通过。
+- Research Cockpit 新手 PDF 已用 Poppler 渲染 16 页检查。
+
+---
+
+## v0.11.0-codex-cli — 2026-06-16
+
+> Codex CLI 递归研究系统 checkpoint：把 Trading Review Wiki 从“多源问答 + 时序事实治理”推进到“多智能体并发研究、插件优先公司深研、只读可审计 Autoresearch Lite、可导出自训练样本”的第一版工程底座。本版仍保持默认只读/审计优先，不自动写正式 `wiki/**`、不改 `raw/**`、不自动应用策略、不触发真实交易。
+
+### 新功能（Feature）
+
+- **CLI 模块化拆分**：新增 `scripts/codex-ingest/**` 内部模块目录，把 core、ask、brain、data-source、ingest、company-research、governance、cli router 等能力从原巨型 `scripts/codex-ingest-lib.mjs` 中拆出；`scripts/codex-ingest.mjs` 仍是唯一 CLI 入口，`scripts/codex-ingest-lib.mjs` 保留兼容 facade，保护既有测试、脚本和 skills。
+- **`ask --agentic` 多智能体并发框架**：新增证据研究、反证审计、市场验证、交易策略四类 agent 并发执行，默认并发度 3，最后由 adjudicator 汇总为原 ask 六章节。单个 agent 失败会降级继续，全部 agent 失败则整体失败；审计产物写入 `.llm-wiki/agent-runs/**`，支持 `--agent-concurrency`、`--agent-timeout-ms`、`--no-agent-artifacts`。
+- **主题 segment 候选池市场验证**：agentic/主题型问题可以先识别主题，再按 `.llm-wiki/theme-segments.json` 或内置 registry 构建细分候选池。内置覆盖光纤/光互联链、PCB 产业链等，避免光模块龙头或泛材料股挤占细分验证；未配置主题会提示 `未配置细分环节` 并回退普通候选池。
+- **Trading Autoresearch Lite**：新增 `autoresearch program`、`autoresearch score`、`autoresearch ledger append/list/status`、`autoresearch proposal/policy propose`。研究计划、固定评分、实验账本和待审核策略建议默认只写 `.llm-wiki/research-programs/**`、`.llm-wiki/experiments/**`、`.llm-wiki/policy-proposals/**`。
+- **公司深研 V2 `--plugin-led`**：`company-research --deep --plugin-led` 采用插件优先链路。主程序先生成 CNINFO/Tushare/Tavily/wiki/行情证据包、财务底表、业务拆解和 `financial-model-v2`；Data Analytics 先做模型/口径/证据质控，Public Equity Investing 直接生成主报告，Investment Banking 只在并购、定增、可转债、重组、融资等交易事项触发或 `--force-investment-banking-review` 时参与。
+- **插件主报告完整性门控**：`--plugin-led` 会生成 `plugin-led/report-completeness.json`、`plugin-led/publish-readiness.json`、`plugin-led/plugin-led.json`；主报告不完整时自动追加一次 Public Equity 修复稿，最终路径以 `plugin-led.json` 的 `outputs.pluginLedReport` 为准。`deep-company-report.md` 作为兼容副本保留。
+- **自训练与策略动作闭环增强**：self-question、self-train、export-samples、policy action/review、agent-runs、self-training plan verify 进入可审计样本链；未审阅 action、未复核计划和 agentic answer 不会进入 high-confidence SFT 正样本。
+- **专业数据源接口管理**：新增 QCC、CNINFO、Tushare 等 data-source 状态/测试和脱敏输出能力，凭证读取与日志继续避免打印真实密钥。
+
+### 改进（Improvement）
+
+- **性能 profile**：新增 `--profile local-max`，在用户显式选择时提高 agentic ask、self-question loop regression/export verification、export-samples verify 的有界并发；显式并发参数仍优先。
+- **只读 policy guardrail**：普通 ask 和 agentic ask 会只读加载 `data/brain/policies.jsonl` 的 active policy，回答必须披露策略要求但当前证据缺口，并相应降低置信度。
+- **公司深研 skill 兼容**：旧 `--plugin-review/--plugin-optimize` 保留为回退和对照；`deep-company-report.md`、`run-summary.json`、`wiki-change-candidates.md` 等兼容产物继续生成，避免旧 reviewer 和 skill 断裂。
+- **Gangtise meeting clues 导出修复**：修复表结构/列名兼容和输出状态记录，降低每日投研线索导出在空记录、表差异和路径状态下的误判。
+- **文档资产补齐**：新增 `docs/codex-ingest-cli使用手册.md`、`docs/递归自训练交易AI框架报告.md`、`docs/专业插件能力层集成说明.md`、`docs/更新报告-2026-06-16-plugin-led公司深研V2.md`，并生成系统成长路径与 CLI 操作教学 PPT/PDF。
+
+### 安全边界（Safety）
+
+- `ask`、`ask --agentic`、`autoresearch score/status/list` 默认只读。
+- `autoresearch proposal` 只生成待审核建议，不自动改 prompt、segment 配置、wiki/raw、交易动作或真实仓位。
+- `company-research --deep --plugin-led` 只写 `.llm-wiki/company-research/**`，正式 `wiki/**` 只生成候选稿，不自动发布。
+- `data-source` 和 stock SQL 相关输出继续做凭证脱敏；真实 API key、secret、PG 连接串不进入报告。
+- self-training high-confidence 样本必须来自已复核 action、已验证样本或明确 evidence refs；价格-only 且缺基本面闭环的样本标记为 `needs_evidence`。
+
+### 文档（Docs）
+
+- 新增 [Codex Ingest CLI 使用手册](docs/codex-ingest-cli使用手册.md)。
+- 新增 [递归自训练交易 AI 框架报告](docs/递归自训练交易AI框架报告.md)。
+- 新增 [专业插件能力层集成说明](docs/专业插件能力层集成说明.md)。
+- 新增 [Plugin-led 公司深研 V2 更新报告](docs/更新报告-2026-06-16-plugin-led公司深研V2.md)。
+- 新增 [v0.11.0 main 合并准备说明](docs/发布说明-v0.11.0-main合并准备.md)。
+- 新增 agent-skills 工程蓝图、PPT 大纲和可编辑 PPT/PDF 教学材料。
+
+### 验证（Validation）
+
+- `npm test -- scripts/codex-ingest-lib.test.mjs` 通过。
+- `npm test -- --run` 通过。
+- `npm run build` 通过；仅保留 Vite 对动态 import/chunk 的既有警告。
+- 版本准备提交前需再次执行 `npm test -- scripts/codex-ingest-lib.test.mjs`、`npm test -- --run`、`npm run build`、`git diff --check`。
+
+---
+
 ## v0.10.5-codex-cli — 2026-06-13
 
 > Codex CLI 分支专项 checkpoint：加入轻量 Graphiti-style Temporal Facts v1 层，把摄入、检索和审计从“静态页面更新”推进到“可追踪当前有效事实、历史反证和概念归一候选”的可回滚 CLI 能力。本版只做本地 checkpoint，不包含 release tag 或发布脚本。
@@ -15,6 +359,7 @@
 - **当前事实检索视图**：`ask` 默认只把 active/current facts 作为普通 `[F]` 证据；`superseded`、`invalidated`、`expired` 默认只作为历史/反证，不污染主证据。
 - **`--include-invalidated` 审计开关**：`ask` 和 `ask eval` 新增 `--include-invalidated`，用于审计式问题显式查看失效、替代和反证事实。
 - **`temporal-facts audit` 命令**：新增 `npm run codex:ingest -- temporal-facts audit`，从现有 `wiki/**/*.md` 提取 Predicate / Alias / Tag / Abbreviation 候选，并把人工裁决、tag 晋升、缩写白黑名单和概念层级规则写入 `.llm-wiki/temporal-facts/` 报告。
+- **`concepts audit` 命令**：新增 `npm run codex:ingest -- concepts audit`，从 `wiki/概念/**/*.md` 提取重复标题、alias-title 冲突、父子包含候选和已配置规则覆盖情况，`--write` 只写 `.llm-wiki/concept-governance/` 报告。
 
 ### 改进（Improvement）
 
@@ -22,15 +367,19 @@
 - **交易复盘 Schema 参考模板**：新增 `docs/交易复盘Schema参考模板.md`，把真实交易复盘 wiki 的三层架构、页面类型、frontmatter、ingest/query/lint 流程和时序事实边界抽象成可公开参考的建库模板。
 - **Predicate 词表细分**：在原有 `HAS_ORDER`、`HAS_VALIDATION_SIGNAL`、`HAS_RISK` 基础上增加订单事实强度、价格/量/客户/技术/基本面验证，以及澄清、竞争、需求、供应链、估值风险等细分 predicate。
 - **概念别名审计降噪**：Alias 只保留 frontmatter aliases、标题拆分和括号同义；tags 与正文缩写拆成独立候选，避免 `国产替代`、`AI`、`Call` 等泛词制造假冲突。
+- **概念规范化路由第一版**：新增 `data/concepts/canonical_rulings.json`，只让高置信 `sameAs/auto` 在摄入计划中改写到标准承载页；`mergeInto`、`childOf`、`tradeSliceOf` 默认只进入 `conceptRouting` 提示，不自动合并细分概念或交易切片。
 - **Plan budget 软告警**：`--max-plan-items`、`--max-create-pages`、`--max-update-pages` 改为写入 `plan-budget.json` 的软告警，不阻断正常多页面摄入。
+- **股票页交易执行边界**：摄入提示、schema 模板和首页说明均明确 `wiki/股票/**` 不再承载个人买入/卖出、成交价、仓位、持仓流水、盈亏和交割单逐笔记录；交易执行复盘留在 raw、总结、策略、错误、模式或 brain 中，股票页只保留公司研究和验证框架。
 - **Temporal Fact Context 进入 prepare/api-run**：ingest context 现在会提供 entity candidates、related facts 和 segment-level fact seeds，帮助后续来源引用旧 fact、补充 supersedes/invalidates/contradicts。
 - **文档化 v1 边界**：新增 `docs/temporal-facts-v1.md`，记录字段、predicate/status/evidence/sourceKind、反证替代、人工复核、回填优先级、别名维护和暂不做项。
 
 ### 安全边界（Safety）
 
 - `ingest/apply` 仍然不写 `raw/**`。
+- `wiki/股票/**` 不新增个人交易执行流水；日复盘/交割单里的买卖执行细节只作为原始证据、复盘结论或长期纠错使用。
 - `writes` 仍限制在正式 wiki markdown 和每日分片日志；旧 `wiki/log.md` 禁止写入。
 - `factWrites` 只能写 `data/facts/temporal_edges.jsonl`，不能写任意 facts 路径。
+- `concepts audit` 只写 `.llm-wiki/concept-governance/**`；概念规范化不删除旧页、不搬迁正文、不写 `raw/**`。
 - C/D 证据可以作为待验证 active，但会保留弱证据 warning，不能被写成确认事实。
 
 ### 验证（Validation）

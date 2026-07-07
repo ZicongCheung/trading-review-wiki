@@ -1,0 +1,5 @@
+outputs/*.pdf binary
+outputs/*.pptx binary
+outputs/*.png binary
+docs/*.pdf binary
+docs/*.pptx binary

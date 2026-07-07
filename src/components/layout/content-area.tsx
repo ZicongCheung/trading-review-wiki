@@ -7,6 +7,8 @@ import { LintView } from "@/components/lint/lint-view"
 import { SearchView } from "@/components/search/search-view"
 import { GraphView } from "@/components/graph/graph-view"
 import { DashboardView } from "@/components/dashboard/dashboard-view"
+import { ResearchCockpitView } from "@/components/dashboard/research-cockpit-view"
+import { TrainingFlywheelView } from "@/components/training/training-flywheel-view"
 import { PlanAuditView } from "@/components/plan/plan-audit-view"
 
 export function ContentArea() {
@@ -27,6 +29,14 @@ export function ContentArea() {
       return <GraphView />
     case "dashboard":
       return <DashboardView />
+    case "research-cockpit":
+      return (
+        <div className="h-full overflow-auto p-6">
+          <ResearchCockpitView />
+        </div>
+      )
+    case "training-flywheel":
+      return <TrainingFlywheelView />
     case "plan":
       return <PlanAuditView />
     default:
