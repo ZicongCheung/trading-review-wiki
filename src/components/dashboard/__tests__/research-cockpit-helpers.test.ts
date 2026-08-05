@@ -192,7 +192,7 @@ describe("research cockpit display helpers", () => {
     expect(theme.detail).toContain("链条验证")
 
     const custom = buildSelectedSignalSourceBrief({
-      currentSource: "/Users/jiegege/Desktop/custom/material.md",
+      currentSource: "/tmp/custom/material.md",
     })
     expect(custom.label).toBe("自定义资料源")
     expect(custom.detail).toContain("新增资料")
@@ -300,7 +300,7 @@ describe("research cockpit display helpers", () => {
       .toBe("raw/微信聊天")
     expect(resolveSignalSourceCandidateRoot("raw/openclaw数据/产业链复盘/gangtise_themes/2026-06-25/001-MPO.md"))
       .toBe("raw/openclaw数据/产业链复盘/gangtise_themes")
-    expect(resolveSignalSourceCandidateRoot("/Users/jiegege/Desktop/杰杰杰/raw/研报新闻/2026-06-25-健滔涨价函.md"))
+    expect(resolveSignalSourceCandidateRoot("/tmp/wiki-project/raw/研报新闻/2026-06-25-健滔涨价函.md"))
       .toBe("raw/研报新闻")
     expect(resolveSignalSourceCandidateRoot("custom/source.md"))
       .toBe("custom/source.md")
@@ -316,12 +316,12 @@ describe("research cockpit display helpers", () => {
     expect(wechat).toBeTruthy()
 
     expect(isSignalSourcePresetActive(
-      "/Users/jiegege/Desktop/杰杰杰/raw/研报新闻/2026-06-25-健滔涨价函.md",
+      "/tmp/wiki-project/raw/研报新闻/2026-06-25-健滔涨价函.md",
       researchNews!,
       presets,
     )).toBe(true)
     expect(isSignalSourcePresetActive(
-      "/Users/jiegege/Desktop/杰杰杰/raw/研报新闻/2026-06-25-健滔涨价函.md",
+      "/tmp/wiki-project/raw/研报新闻/2026-06-25-健滔涨价函.md",
       wechat!,
       presets,
     )).toBe(false)
@@ -1036,7 +1036,7 @@ describe("research cockpit display helpers", () => {
         wikiReferenceIndex: true,
         financeEntityAudit: true,
         financeEntityAuditRows: 22037,
-        financeEntityAuditTableRef: "/Users/jiegege/Desktop/杰杰杰/.llm-wiki/sag-entity-audit/full-wiki-finance-entities-20260623/project-entity-table.csv",
+        financeEntityAuditTableRef: "/tmp/wiki-project/.llm-wiki/sag-entity-audit/full-wiki-finance-entities-20260623/project-entity-table.csv",
         financeEntityAuditTypeCounts: {
           company: 922,
           sector: 240,
@@ -1151,7 +1151,7 @@ describe("research cockpit display helpers", () => {
     expect(copy.expandedDetail).toContain("待处理卡片与 Ask 深挖入口")
     expect(copy.expandedDetail).toContain("覆盖：股票 1524、公司 922、行业 240、主题 612、产品线 3176、技术路线 986、催化词 2448、交易模式 188、市场状态 76、风险反证 431")
     expect(copy.expandedDetail).toContain("已加载词表 project-entity-table.csv")
-    expect(copy.expandedDetail).not.toContain("/Users/jiegege")
+    expect(copy.expandedDetail).not.toContain("/tmp/wiki-project")
     expect(copy.badges.map((badge) => badge.label)).toContain("全量金融词表 2.2万")
     expect(copy.badges.find((badge) => badge.label === "全量金融词表 2.2万")?.title).toContain("SAG金融词 22037 行")
     expect(copy.badges.find((badge) => badge.label === "全量金融词表 2.2万")?.title).toContain("词表 project-entity-table.csv")

@@ -4,11 +4,20 @@ import fs from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 const execFile = promisify(execFileCallback)
 
-const DEFAULT_PROJECT = "/Users/jiegege/Desktop/杰杰杰"
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(MODULE_DIR, "..")
+const IN_REPO_WORKSPACE = path.join(REPO_ROOT, "zTradingData", "小张的交易复盘")
+
+function resolveDefaultProject() {
+  const fromEnv = (process.env.TRADING_WIKI_PROJECT || "").trim()
+  if (fromEnv) return path.resolve(fromEnv)
+  return IN_REPO_WORKSPACE
+}
 
 function usage() {
   return `Usage:
@@ -17,7 +26,7 @@ function usage() {
 Options:
   --role prod|research        Machine role. Aliases: old, automation, new, dev.
   --repo <path>               Code repository to check. Defaults to cwd.
-  --project <path>            Trading wiki project path. Defaults to /Users/jiegege/Desktop/杰杰杰.
+  --project <path>            Trading wiki project path. Defaults to TRADING_WIKI_PROJECT or in-repo zTradingData/小张的交易复盘.
   --require-branch <branch>   Fail unless the repo is on this branch.
   --allow-dirty[=true|false]  Allow uncommitted repo changes. Defaults to false.
   --skip-secret-scan          Skip path-only github_pat_ scan.
@@ -26,7 +35,7 @@ Options:
 
 Examples:
   npm run machine:preflight -- --role prod --require-branch main
-  npm run machine:preflight -- --role research --project /Users/jiegege/Desktop/杰杰杰-snapshots/latest --allow-dirty
+  npm run machine:preflight -- --role research --project /path/to/wiki-snapshots/latest --allow-dirty
 `
 }
 
@@ -145,7 +154,7 @@ async function main() {
 
   const role = normalizeRole(args.role)
   const repo = path.resolve(String(args.repo || process.cwd()))
-  const project = path.resolve(String(args.project || DEFAULT_PROJECT))
+  const project = path.resolve(String(args.project || resolveDefaultProject()))
   const allowDirty = parseBoolean(args["allow-dirty"], false)
   const skipSecretScan = parseBoolean(args["skip-secret-scan"], false)
   const json = parseBoolean(args.json, false)
@@ -209,7 +218,7 @@ async function main() {
   }
 
   if (role === "research" && !isSnapshotLike(project)) {
-    addCheck(checks, "warn", "research project path", "prefer a snapshot path such as /Users/jiegege/Desktop/杰杰杰-snapshots/latest")
+    addCheck(checks, "warn", "research project path", "prefer a snapshot path such as <wiki>-snapshots/latest")
   }
 
   if (role === "prod") {

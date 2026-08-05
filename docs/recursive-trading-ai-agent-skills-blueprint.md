@@ -34,7 +34,7 @@
 工具仓库在：
 
 ```text
-/Users/jiegege/Downloads/trading-review-wiki-0.10.311
+/path/to/trading-review-wiki
 ```
 
 本文对应的发布准备分支是：

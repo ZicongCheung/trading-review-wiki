@@ -320,7 +320,7 @@ npm run codex:ingest -- apply \
 ```sh
 npm run codex:ingest -- batch-run \
   --sources /path/to/source-a.md,/path/to/source-b.md,/path/to/source-c.md \
-  --project /Users/jiegege/Desktop/杰杰杰 \
+  --project /path/to/your-trading-wiki \
   --provider codex \
   --api-concurrency 2 \
   --page-concurrency 2 \
@@ -335,8 +335,8 @@ npm run codex:ingest -- batch-run \
 
 ```sh
 npm run codex:ingest -- api-run \
-  --source /Users/jiegege/Desktop/杰杰杰/raw/微信聊天/2026-06-12.md \
-  --project /Users/jiegege/Desktop/杰杰杰 \
+  --source /path/to/your-trading-wiki/raw/微信聊天/2026-06-12.md \
+  --project /path/to/your-trading-wiki \
   --provider codex \
   --source-sharding auto \
   --shard-concurrency 3 \

@@ -3,12 +3,27 @@ import { execFile as execFileCallback } from "node:child_process"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 const execFile = promisify(execFileCallback)
 
-const DEFAULT_SOURCE = "/Users/jiegege/Desktop/杰杰杰"
-const DEFAULT_DEST_ROOT = "/Users/jiegege/Desktop/杰杰杰-snapshots"
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(MODULE_DIR, "..")
+const IN_REPO_WORKSPACE = path.join(REPO_ROOT, "zTradingData", "小张的交易复盘")
+
+function resolveDefaultSource() {
+  const fromEnv = (process.env.TRADING_WIKI_PROJECT || "").trim()
+  if (fromEnv) return path.resolve(fromEnv)
+  return IN_REPO_WORKSPACE
+}
+
+function resolveDefaultDestRoot(source) {
+  const fromEnv = (process.env.TRADING_WIKI_SNAPSHOT_ROOT || "").trim()
+  if (fromEnv) return path.resolve(fromEnv)
+  return `${String(source).replace(/[\\/]+$/, "")}-snapshots`
+}
+
 const DEFAULT_EXCLUDES = [
   ".git/",
   "node_modules/",
@@ -24,8 +39,8 @@ function usage() {
   node scripts/sync-live-corpus-snapshot.mjs [options]
 
 Options:
-  --source <path>             Live wiki source. Defaults to /Users/jiegege/Desktop/杰杰杰.
-  --dest-root <path>          Snapshot root. Defaults to /Users/jiegege/Desktop/杰杰杰-snapshots.
+  --source <path>             Live wiki source. Defaults to TRADING_WIKI_PROJECT or in-repo zTradingData/小张的交易复盘.
+  --dest-root <path>          Snapshot root. Defaults to TRADING_WIKI_SNAPSHOT_ROOT or <source>-snapshots.
   --name <name>               Snapshot directory name. Defaults to Beijing timestamp.
   --exclude <pattern>         Extra rsync exclude. Can be repeated.
   --no-delete                 Do not delete stale files in an existing snapshot dir.
@@ -36,7 +51,7 @@ Options:
   --help                      Show this help.
 
 Examples:
-  npm run machine:snapshot -- --source /Users/jiegege/Desktop/杰杰杰
+  npm run machine:snapshot -- --source /path/to/live-wiki
   npm run machine:snapshot -- --dry-run --name test
 `
 }
@@ -191,8 +206,8 @@ async function main() {
     return
   }
 
-  const source = path.resolve(String(args.source || DEFAULT_SOURCE))
-  const destRoot = path.resolve(String(args["dest-root"] || DEFAULT_DEST_ROOT))
+  const source = path.resolve(String(args.source || resolveDefaultSource()))
+  const destRoot = path.resolve(String(args["dest-root"] || resolveDefaultDestRoot(source)))
   const name = String(args.name || shanghaiStamp())
   if (name.includes(path.sep) || name === "." || name === "..") {
     throw new Error(`Invalid snapshot name: ${name}`)

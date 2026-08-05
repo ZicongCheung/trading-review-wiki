@@ -464,8 +464,8 @@ Benchmark 缺口不是错误，而是提示你下一批该补什么。
 如果你想确认 UI 背后发生了什么，可以用这些命令对照：
 
 ```bash
-cd /Users/jiegege/Downloads/trading-review-wiki-0.10.311
-export PROJECT="/Users/jiegege/Desktop/杰杰杰"
+cd /path/to/trading-review-wiki
+export PROJECT="/path/to/your-trading-wiki"
 
 npm --silent run codex:ingest -- stock-feedback status --project "$PROJECT"
 npm --silent run codex:ingest -- stock-feedback build-trajectories --project "$PROJECT"
@@ -482,7 +482,7 @@ npm --silent run codex:ingest -- stock-feedback verify --project "$PROJECT"
 npm --silent run codex:ingest -- stock-feedback review \
   --trajectory-id <trajectory_id> \
   --action approve_for_adapter \
-  --reviewer jiegege \
+  --reviewer <reviewer> \
   --note "确认这是可复用判断路线；事实留在 retrieval/tool state" \
   --write \
   --project "$PROJECT"

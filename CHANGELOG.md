@@ -277,7 +277,7 @@
 - `npm --silent exec vitest -- run scripts/codex-ingest-stock-feedback-paper-trade.test.mjs scripts/codex-ingest-data-source.test.mjs scripts/codex-ingest-cli-args.test.mjs src/components/training/__tests__/training-flywheel-view.test.ts` 通过：`154 passed`。
 - `npm --silent exec vitest -- run src/components/dashboard/__tests__/research-cockpit-helpers.test.ts` 通过：`105 passed`。
 - `cargo test research_cockpit --lib` 通过：`4 passed`，仅保留既有 Rust warning。
-- `npm --silent run codex:ingest -- stock-feedback verify --project /Users/jiegege/Desktop/杰杰杰` 返回 `status=ok`，当前检查到 `49` trajectories、`145` benchmark cases、`114` LoRA-ready candidates、`6` manifests、`1` paper trade。
+- `npm --silent run codex:ingest -- stock-feedback verify --project /path/to/your-trading-wiki` 返回 `status=ok`，当前检查到 `49` trajectories、`145` benchmark cases、`114` LoRA-ready candidates、`6` manifests、`1` paper trade。
 - `npm run build` 通过；仅保留既有 Vite dynamic import / chunk 警告。
 - `git diff --check` 通过；真实 Tushare token 与旧假密钥字符串未进入仓库。
 - 已知后续重点：补真实交易账本、扩大 profitable / priced-in / fundamental closure 样本密度、把 paper trade 子 Agent 自动化。

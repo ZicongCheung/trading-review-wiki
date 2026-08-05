@@ -53,6 +53,7 @@ pnpm-debug.log*
 # Local Codex/ingest runtime artifacts
 .llm-wiki/
 
-# Local one-off verify artifacts
+# Local one-off verify artifacts (generated; do not commit)
 scripts/.verify-gui-parse.bundle.mjs
+scripts/.verify-gui-parse.bundle.cjs
 scripts/.verify-body.ts

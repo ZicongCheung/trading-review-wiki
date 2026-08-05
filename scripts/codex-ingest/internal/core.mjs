@@ -16,19 +16,17 @@ export const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 // Resolution order for the data workspace when --project is not supplied:
 //   1. TRADING_WIKI_PROJECT env var (explicit override)
-//   2. the in-repo workspace zTradingData/小张的交易复盘 (present on this machine)
-//   3. the original hard-coded macOS path (kept for backwards compatibility)
-// Without step 2 a Windows run would silently create D:/Users/jiegege/Desktop/杰杰杰
-// and write outputs to a directory the user never sees.
+//   2. the in-repo workspace zTradingData/小张的交易复盘 (if present)
+//   3. fall back to the in-repo path string so callers still get a stable default
+//      (CLI flags / GUI always pass --project explicitly in production).
 const REPO_ROOT = path.resolve(MODULE_DIR, "..", "..", "..")
 const IN_REPO_WORKSPACE = path.join(REPO_ROOT, "zTradingData", "小张的交易复盘")
-const LEGACY_PROJECT_PATH = "/Users/jiegege/Desktop/杰杰杰"
 
 function resolveDefaultProjectPath() {
   const fromEnv = process.env.TRADING_WIKI_PROJECT?.trim()
   if (fromEnv) return fromEnv
   if (existsSync(IN_REPO_WORKSPACE)) return IN_REPO_WORKSPACE
-  return LEGACY_PROJECT_PATH
+  return IN_REPO_WORKSPACE
 }
 
 export const DEFAULT_PROJECT_PATH = resolveDefaultProjectPath()

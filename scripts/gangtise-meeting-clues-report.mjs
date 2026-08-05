@@ -1,15 +1,59 @@
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
-import { pathToFileURL } from "node:url"
+import { existsSync } from "node:fs"
+import { pathToFileURL, fileURLToPath } from "node:url"
 import { createRequire } from "node:module"
 import { stringify as stringifyYaml } from "yaml"
 
 const require = createRequire(import.meta.url)
-const gangtiseAutomationRequire = createRequire("/Users/jiegege/.codex/automations/gangtise-schema/package.json")
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(MODULE_DIR, "..")
+const IN_REPO_WORKSPACE = path.join(REPO_ROOT, "zTradingData", "小张的交易复盘")
 
-const OUTPUT_DIR = "/Users/jiegege/Desktop/杰杰杰/raw/研报新闻/投研线索"
-const TEMP_PG_NODE_MODULES = "/private/tmp/codex-gangtise-meeting-clues/node_modules"
-const FALLBACK_DB_CONFIG_PATH = "/Users/jiegege/.codex/automations/gangtise-schema/db-config.json"
+function resolveProjectRoot() {
+  const fromEnv = (process.env.TRADING_WIKI_PROJECT || "").trim()
+  if (fromEnv) return path.resolve(fromEnv)
+  return IN_REPO_WORKSPACE
+}
+
+function resolveOutputDir() {
+  const fromEnv = (process.env.GANGTISE_MEETING_CLUES_OUTPUT_DIR || "").trim()
+  if (fromEnv) return path.resolve(fromEnv)
+  return path.join(resolveProjectRoot(), "raw", "研报新闻", "投研线索")
+}
+
+function resolveFallbackDbConfigPath() {
+  const fromEnv = (process.env.PG_SHIHAO_CONFIG_PATH || "").trim()
+  if (fromEnv) return path.resolve(fromEnv)
+  const homeCandidates = [
+    path.join(os.homedir(), ".config", "trading-review-wiki", "gangtise-db-config.json"),
+    path.join(os.homedir(), ".codex", "automations", "gangtise-schema", "db-config.json"),
+  ]
+  for (const candidate of homeCandidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return homeCandidates[0]
+}
+
+function resolveGangtiseAutomationRequire() {
+  const fromEnv = (process.env.GANGTISE_AUTOMATION_PACKAGE || "").trim()
+  const candidates = [
+    fromEnv,
+    path.join(os.homedir(), ".codex", "automations", "gangtise-schema", "package.json"),
+  ].filter(Boolean)
+  for (const pkg of candidates) {
+    try {
+      if (existsSync(pkg)) return createRequire(pkg)
+    } catch {}
+  }
+  return null
+}
+
+const gangtiseAutomationRequire = resolveGangtiseAutomationRequire()
+const OUTPUT_DIR = resolveOutputDir()
+const TEMP_PG_NODE_MODULES = path.join(os.tmpdir(), "codex-gangtise-meeting-clues", "node_modules")
+const FALLBACK_DB_CONFIG_PATH = resolveFallbackDbConfigPath()
 const DEFAULT_CONFIG = {
   schema: "public",
   table: "gangtise_meeting_clues",
@@ -191,7 +235,10 @@ function renderMarkdown(rows, meta) {
 async function loadPgClient() {
   const attempts = [
     () => require("pg"),
-    () => gangtiseAutomationRequire("pg"),
+    () => {
+      if (!gangtiseAutomationRequire) throw new Error("no gangtise automation require")
+      return gangtiseAutomationRequire("pg")
+    },
     async () => import(pathToFileURL(path.join(TEMP_PG_NODE_MODULES, "pg", "lib", "index.js")).href),
   ]
   for (const attempt of attempts) {
@@ -200,7 +247,8 @@ async function loadPgClient() {
       return mod.Client ?? mod.default?.Client ?? mod.default ?? mod
     } catch {}
   }
-  throw new Error(`Missing PostgreSQL client. Install it temporarily with: npm install --prefix /private/tmp/codex-gangtise-meeting-clues pg`)
+  const installHint = path.join(os.tmpdir(), "codex-gangtise-meeting-clues")
+  throw new Error(`Missing PostgreSQL client. Install it temporarily with: npm install --prefix ${installHint} pg`)
 }
 
 async function readLocalDbConfig() {

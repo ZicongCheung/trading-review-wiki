@@ -4,10 +4,11 @@ use std::process::{Command, Stdio};
 use tauri::Emitter;
 
 const MAX_OUTPUT_BYTES: usize = 2_000_000;
-const DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS: [&str; 1] = [
-    "/Users/jiegege/Desktop/杰杰杰/.llm-wiki/sag-entity-audit",
-];
-const ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS: [&str; 1] = ["/Users/jiegege/Desktop/杰杰杰/raw"];
+// No machine-local absolute paths. Optional extra roots come from env:
+// TRADING_WIKI_DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS (`;`/`,`/newline-separated path list).
+// TRADING_WIKI_ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS (same format) for external signal sources.
+const DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS: [&str; 0] = [];
+const ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS: [&str; 0] = [];
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
@@ -61,6 +62,40 @@ fn path_is_within(candidate: &Path, root: &Path) -> bool {
     candidate_resolved == root_resolved || candidate_resolved.starts_with(&root_resolved)
 }
 
+fn split_path_list(raw: &str) -> Vec<String> {
+    // Delimiters only — never split on OS path separators (Windows `\` would break paths).
+    raw.split(|c: char| c == ';' || c == ',' || c == '\n' || c == '\r')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn env_path_list(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| split_path_list(&v))
+        .unwrap_or_default()
+}
+
+fn allowed_external_signal_source_roots() -> Vec<String> {
+    let mut roots = Vec::new();
+    for root in ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS {
+        roots.push((*root).to_string());
+    }
+    roots.extend(env_path_list("TRADING_WIKI_ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS"));
+    roots
+}
+
+fn default_finance_entity_audit_roots() -> Vec<String> {
+    let mut roots = Vec::new();
+    for root in DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS {
+        roots.push((*root).to_string());
+    }
+    roots.extend(env_path_list("TRADING_WIKI_DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS"));
+    roots
+}
+
 fn project_bounded_path(project_path: &str, source: &str) -> bool {
     let project = Path::new(project_path);
     let source_path = Path::new(source);
@@ -70,7 +105,7 @@ fn project_bounded_path(project_path: &str, source: &str) -> bool {
         project.join(source_path)
     };
     path_is_within(&candidate, project)
-        || ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS
+        || allowed_external_signal_source_roots()
             .iter()
             .any(|root| path_is_within(&candidate, Path::new(root)))
         || path_is_within(&candidate, &Path::new(project_path).join("raw"))
@@ -125,19 +160,31 @@ mod tests {
     }
 
     #[test]
-    fn research_cockpit_source_path_allows_live_raw_signal_sources() {
+    fn research_cockpit_source_path_allows_env_approved_external_raw_roots() {
         let project = temp_project_path();
-        let live_raw = "/Users/jiegege/Desktop/杰杰杰/raw/openclaw数据/产业链复盘/gangtise_themes";
+        let external_root = std::env::temp_dir().join("trading-review-wiki-external-raw-root");
+        let _ = std::fs::create_dir_all(&external_root);
+        let live_raw = external_root
+            .join("openclaw数据")
+            .join("产业链复盘")
+            .join("gangtise_themes");
+        let live_raw_str = live_raw.to_string_lossy().into_owned();
 
+        // SAFETY: test-only env mutation; single-threaded unit tests.
+        std::env::set_var(
+            "TRADING_WIKI_ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS",
+            external_root.to_string_lossy().as_ref(),
+        );
         let source = bounded_project_source_arg(
-            Some(live_raw.to_string()),
+            Some(live_raw_str.clone()),
             "raw/微信聊天",
             240,
             &project,
-        )
-        .expect("live raw signal source should be accepted");
+        );
+        std::env::remove_var("TRADING_WIKI_ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS");
 
-        assert_eq!(source, live_raw);
+        let source = source.expect("env-approved external raw signal source should be accepted");
+        assert_eq!(source, live_raw_str);
     }
 
     #[test]
@@ -163,18 +210,29 @@ mod tests {
     }
 
     #[test]
-    fn research_cockpit_source_path_rejects_live_raw_sibling_prefix() {
+    fn research_cockpit_source_path_rejects_unapproved_external_raw_sibling_prefix() {
         let project = temp_project_path();
-        let sibling = "/Users/jiegege/Desktop/杰杰杰/raw-sibling/openclaw数据/产业链复盘/gangtise_themes";
+        let external_root = std::env::temp_dir().join("trading-review-wiki-external-raw-root");
+        let sibling = external_root
+            .join("raw-sibling")
+            .join("openclaw数据")
+            .join("产业链复盘")
+            .join("gangtise_themes");
+        let sibling_str = sibling.to_string_lossy().into_owned();
 
+        std::env::set_var(
+            "TRADING_WIKI_ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS",
+            external_root.join("raw").to_string_lossy().as_ref(),
+        );
         let err = bounded_project_source_arg(
-            Some(sibling.to_string()),
+            Some(sibling_str),
             "raw/微信聊天",
             240,
             &project,
-        )
-        .expect_err("live raw sibling prefix must be rejected");
+        );
+        std::env::remove_var("TRADING_WIKI_ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS");
 
+        let err = err.expect_err("external raw sibling prefix must be rejected");
         assert!(err.contains("approved live raw signal roots"));
     }
 
@@ -1535,10 +1593,9 @@ fn append_default_finance_entity_audit_roots(cli_args: &mut Vec<String>) {
     if existing {
         return;
     }
-    let roots = DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS
-        .iter()
+    let roots = default_finance_entity_audit_roots()
+        .into_iter()
         .filter(|root| Path::new(root).is_dir())
-        .copied()
         .collect::<Vec<_>>();
     if roots.is_empty() {
         return;
