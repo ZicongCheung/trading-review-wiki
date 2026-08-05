@@ -57,6 +57,7 @@ import {
   readIfExists,
   requestCodexExecText,
   requestResponsesText,
+  requestOpenAICompatibleText,
   safeErrorMessage,
   sanitizeArtifactName,
   toPosixPath,
@@ -1005,7 +1006,21 @@ export async function requestAgenticText({ stage, role, prompt, instructions, co
     const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY
     if (!apiKey) throw new Error("Missing OpenAI API key. Pass --api-key or set OPENAI_API_KEY, or use --provider codex.")
     if (!model) throw new Error("Missing model. Pass --model or set OPENAI_MODEL.")
-    return requestResponsesText({
+
+    const useResponsesApi = options.useResponsesApi ?? (options.endpoint ? /openai\.com$/i.test(String(options.endpoint)) : true)
+    if (useResponsesApi) {
+      return requestResponsesText({
+        apiKey,
+        endpoint: options.endpoint,
+        model,
+        prompt,
+        instructions,
+        reasoningEffort: options.reasoningEffort ?? "medium",
+        timeoutMs: options.agentTimeoutMs,
+      })
+    }
+
+    return requestOpenAICompatibleText({
       apiKey,
       endpoint: options.endpoint,
       model,

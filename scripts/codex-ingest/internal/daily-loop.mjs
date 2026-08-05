@@ -850,7 +850,14 @@ export async function validatePendingDailyPredictions(projectPath, options = {})
         validationAnchorDate: anchor?.date,
         validationAnchorExclusive: anchor?.exclusive,
     })
-    const externalMarketResult = anchor
+    // Anchored validations originally used the local SQL-only path. When SQL is
+    // unavailable (no PG source), that path yields no close price and every verdict
+    // collapses to "SQL 日线缺少可计算的收盘价列". Since Xueqiu is now our reliable
+    // external source (amount + turnover, tolerant of concurrency), fall back to it
+    // for anchored validations whenever SQL is not serving data. SQL-available
+    // deployments keep the original SQL-only behavior.
+    const sqlUnavailable = metricResult.status !== "ok"
+    const externalMarketResult = anchor && !sqlUnavailable
       ? { source: "off", status: "skipped", metrics: new Map(), okCount: 0, total: stocksForQuery.length, warning: "anchored validation uses SQL only" }
       : await fetchDailyLoopExternalMarketMetrics(stocksForQuery, { ...options, stockLookbackDays: windowDays, lookbackDays: windowDays })
     const marketMetrics = mergeDailyLoopMarketMetrics(stocksForQuery, metricResult.metrics, externalMarketResult.metrics)
@@ -937,6 +944,140 @@ export function renderDailyLoopWikiFeedback({ mode, runId, questions, validation
   }
   rows.push("", "## Guardrail", "- This file is a review queue only. Do not apply wiki writes without a separate ingest/apply step.")
   return `${rows.join("\n")}\n`
+}
+
+/**
+ * E2 复利回灌：把每次 Daily Loop（--write）的结构化结论沉淀进中文分类 wiki，
+ * 让 `wiki/问答/`、`wiki/市场环境/`、`wiki/进化/`、`wiki/策略/` 持续累积可复用内容。
+ * - 问答对：每问一个 `wiki/问答/<date>-<qid>.md`（type: query），可被知识树检索复用。
+ * - 市场环境：每日一张快照 `wiki/市场环境/<date>-市场快照.md`（type: market）。
+ * - 认知演化：仅当自训练产出动作时 `wiki/进化/<date>-认知演化.md`（type: evolution）。
+ * - 策略状态：每日一张 `wiki/策略/<date>-策略状态.md`（type: strategy）。
+ * 文件名按日期命名，同日重跑覆盖（幂等）；未产生有意义内容时对应文件不生成。
+ */
+function compoundFrontmatterValue(v) {
+  return String(v ?? "").replace(/"/g, "'").replace(/\n/g, " ").trim()
+}
+
+export async function writeDailyLoopCompoundFiles({ projectPath, generatedAt, mode, runId, questions, answers, validations, selfTraining, activePolicies = [], themes = [], externalMarketResult }) {
+  const date = generatedAt.slice(0, 10)
+  const wikiRoot = path.join(projectPath, "wiki")
+  const written = []
+
+  // 1. 问答对 -> wiki/问答/
+  for (const question of questions ?? []) {
+    const answer = answers?.get?.(question.id)
+    if (!answer) continue
+    const stockNames = (question.stocks ?? []).map((s) => stockLabel(s)).filter(Boolean)
+    const rows = [
+      "---",
+      `type: query`,
+      `title: "${compoundFrontmatterValue((question.question ?? "").slice(0, 60))}"`,
+      `date: ${date}`,
+      `branch: ${compoundFrontmatterValue(question.branch)}`,
+      `question_type: ${compoundFrontmatterValue(question.type)}`,
+      `stocks: [${stockNames.map((n) => `"${compoundFrontmatterValue(n)}"`).join(", ")}]`,
+      `run_id: ${runId}`,
+      "---",
+      "",
+      `# Q: ${question.question ?? ""}`,
+      "",
+      `**分支**: ${question.branch} / ${question.type}`,
+      stockNames.length ? `**关联标的**: ${stockNames.join("、")}` : "**关联标的**: 无",
+      "",
+      "## 答",
+      "",
+      String(answer).trim(),
+      "",
+    ]
+    const fpath = path.join(wikiRoot, "问答", `${date}-${question.id}.md`)
+    await ensureDirectory(path.dirname(fpath))
+    await fs.writeFile(fpath, `${rows.join("\n")}\n`, "utf8")
+    written.push(projectRelative(projectPath, fpath))
+  }
+
+  // 2. 市场环境快照 -> wiki/市场环境/
+  {
+    const themeLines = (themes ?? []).slice(0, 12).map((t) => `- ${compoundFrontmatterValue(t.branch)}（score ${t.score ?? "NA"}）`).join("\n") || "- 无主题"
+    const ext = externalMarketResult ?? {}
+    const rows = [
+      "---",
+      `type: market`,
+      `title: "${date} 市场环境快照"`,
+      `date: ${date}`,
+      `mode: ${mode}`,
+      `run_id: ${runId}`,
+      "---",
+      "",
+      `# ${date} 市场环境快照`,
+      "",
+      `- 模式: ${mode}`,
+      `- 主题线:`,
+      themeLines,
+      `- 候选主题数: ${(themes ?? []).length}`,
+      `- 外部行情验证: ${ext.status ?? "n/a"}（${ext.okCount ?? 0}/${ext.total ?? 0} 成功）`,
+      validations?.length ? `- 市场验证信号: ${validations.length} 条` : "- 市场验证信号: 无（盘前模式）",
+      "",
+    ]
+    const fpath = path.join(wikiRoot, "市场环境", `${date}-市场快照.md`)
+    await ensureDirectory(path.dirname(fpath))
+    await fs.writeFile(fpath, `${rows.join("\n")}\n`, "utf8")
+    written.push(projectRelative(projectPath, fpath))
+  }
+
+  // 3. 认知演化 -> wiki/进化/（仅当自训练产出动作）
+  if (selfTraining?.actions?.length) {
+    const rows = [
+      "---",
+      `type: evolution`,
+      `title: "${date} 认知演化"`,
+      `date: ${date}`,
+      `mode: ${mode}`,
+      `run_id: ${runId}`,
+      "---",
+      "",
+      `# ${date} 认知演化记录`,
+      "",
+      `自训练在本次日循环中提议 ${selfTraining.actions.length} 条规则调整：`,
+      "",
+      ...selfTraining.actions.slice(0, 30).map((a) => `- ${compoundFrontmatterValue(a.rule)} ${compoundFrontmatterValue(a.target)}：${compoundFrontmatterValue(a.reason)}`),
+      "",
+    ]
+    const fpath = path.join(wikiRoot, "进化", `${date}-认知演化.md`)
+    await ensureDirectory(path.dirname(fpath))
+    await fs.writeFile(fpath, `${rows.join("\n")}\n`, "utf8")
+    written.push(projectRelative(projectPath, fpath))
+  }
+
+  // 4. 策略状态 -> wiki/策略/
+  {
+    const policyLines = (activePolicies ?? []).slice(0, 20).map((p) => renderDailyLoopActivePolicyLine(p)).join("\n") || "- 无激活策略"
+    const rows = [
+      "---",
+      `type: strategy`,
+      `title: "${date} 策略状态"`,
+      `date: ${date}`,
+      `mode: ${mode}`,
+      `run_id: ${runId}`,
+      "---",
+      "",
+      `# ${date} 策略状态`,
+      "",
+      "## 激活策略",
+      policyLines,
+      "",
+      selfTraining?.actions?.length
+        ? `## 待落地自训练动作\n${selfTraining.actions.slice(0, 20).map((a) => `- ${compoundFrontmatterValue(a.rule)} ${compoundFrontmatterValue(a.target)}: ${compoundFrontmatterValue(a.action ?? a.reason)}`).join("\n")}`
+        : "## 待落地自训练动作\n- 无",
+      "",
+    ]
+    const fpath = path.join(wikiRoot, "策略", `${date}-策略状态.md`)
+    await ensureDirectory(path.dirname(fpath))
+    await fs.writeFile(fpath, `${rows.join("\n")}\n`, "utf8")
+    written.push(projectRelative(projectPath, fpath))
+  }
+
+  return written
 }
 
 export async function runDailyLoop(options = {}) {
@@ -1060,6 +1201,7 @@ export async function runDailyLoop(options = {}) {
   const dryRun = !options.write
   let reportPath = null
   let feedbackPath = null
+  let compoundPaths = []
   if (!dryRun) {
     await writeDailyLoopJsonl(path.join(brainDir(projectPath), brainFileForType("prediction")), predictions)
     await writeDailyLoopJsonl(path.join(brainDir(projectPath), brainFileForType("validation")), validations)
@@ -1071,6 +1213,8 @@ export async function runDailyLoop(options = {}) {
       await ensureDirectory(path.dirname(feedbackPath))
       await fs.writeFile(feedbackPath, renderDailyLoopWikiFeedback({ mode, runId, questions, validations, selfTraining }), "utf8")
     }
+    // E2 复利回灌：把结构化结论沉淀进中文分类 wiki（问答/市场环境/进化/策略）
+    compoundPaths = await writeDailyLoopCompoundFiles({ projectPath, generatedAt, mode, runId, questions, answers, validations, selfTraining, activePolicies, themes, externalMarketResult })
   }
 
   return {
@@ -1125,6 +1269,7 @@ export async function runDailyLoop(options = {}) {
     reportRelativePath: reportPath ? projectRelative(projectPath, reportPath) : null,
     feedbackPath,
     feedbackRelativePath: feedbackPath ? projectRelative(projectPath, feedbackPath) : null,
+    compoundPaths,
   }
 }
 

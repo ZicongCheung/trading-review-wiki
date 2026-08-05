@@ -3,16 +3,17 @@ import Graph from "graphology"
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core"
 import "@react-sigma/core/lib/style.css"
 import forceAtlas2 from "graphology-layout-forceatlas2"
-import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Layers, Tag, Lightbulb, AlertTriangle, Link2, X, Search, Loader2 } from "lucide-react"
+import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Layers, Tag, Lightbulb, AlertTriangle, Link2, X, Search, Loader2, ScanSearch, Clock, CheckCircle2 } from "lucide-react"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { useResearchStore } from "@/stores/research-store"
 import { Button } from "@/components/ui/button"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile } from "@/commands/fs"
+import { runResearchCockpitCommand } from "@/commands/research-cockpit"
 import { buildWikiGraph, type GraphNode, type GraphEdge, type CommunityInfo } from "@/lib/wiki-graph"
 import { findSurprisingConnections, detectKnowledgeGaps, type SurprisingConnection, type KnowledgeGap } from "@/lib/graph-insights"
 import { queueResearch } from "@/lib/deep-research"
-import { optimizeResearchTopic, type OptimizedTopic } from "@/lib/optimize-research-topic"
+import { optimizeResearchTopic } from "@/lib/optimize-research-topic"
 import { normalizePath } from "@/lib/path-utils"
 
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -347,6 +348,12 @@ export function GraphView() {
     queries: string[]
   } | null>(null)
   const lastLoadedVersion = useRef(-1)
+  // concepts / temporal-facts audit state
+  const [conceptsResult, setConceptsResult] = useState<string | null>(null)
+  const [conceptsRunning, setConceptsRunning] = useState(false)
+  const [temporalResult, setTemporalResult] = useState<string | null>(null)
+  const [temporalRunning, setTemporalRunning] = useState(false)
+  const [auditWrite, setAuditWrite] = useState(false)
 
   const loadGraph = useCallback(async () => {
     if (!project) return
@@ -379,6 +386,38 @@ export function GraphView() {
       loadGraph()
     }
   }, [loadGraph, dataVersion])
+
+  const runConceptsAudit = useCallback(async () => {
+    if (!project) return
+    setConceptsRunning(true)
+    setConceptsResult(null)
+    try {
+      const args: string[] = ["audit"]
+      if (auditWrite) args.push("--write")
+      const raw = await runResearchCockpitCommand(project, "concepts", args)
+      setConceptsResult(raw)
+    } catch (e: any) {
+      setConceptsResult(`Error: ${e?.message ?? String(e)}`)
+    } finally {
+      setConceptsRunning(false)
+    }
+  }, [project, auditWrite])
+
+  const runTemporalAudit = useCallback(async () => {
+    if (!project) return
+    setTemporalRunning(true)
+    setTemporalResult(null)
+    try {
+      const args: string[] = ["audit"]
+      if (auditWrite) args.push("--write")
+      const raw = await runResearchCockpitCommand(project, "temporal-facts", args)
+      setTemporalResult(raw)
+    } catch (e: any) {
+      setTemporalResult(`Error: ${e?.message ?? String(e)}`)
+    } finally {
+      setTemporalRunning(false)
+    }
+  }, [project, auditWrite])
 
   const handleNodeClick = useCallback(
     async (nodeId: string) => {
@@ -583,11 +622,80 @@ export function GraphView() {
           <Button variant="ghost" size="sm" onClick={loadGraph} className="text-xs gap-1 h-7">
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
+          <span className="text-muted-foreground text-[10px]">|</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={conceptsRunning}
+            onClick={runConceptsAudit}
+            className="text-xs gap-1 h-7"
+          >
+            <ScanSearch className="h-3.5 w-3.5" />
+            {conceptsRunning ? "概念审计中…" : "概念审计"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={temporalRunning}
+            onClick={runTemporalAudit}
+            className="text-xs gap-1 h-7"
+          >
+            <Clock className="h-3.5 w-3.5" />
+            {temporalRunning ? "时序审计中…" : "时序事实"}
+          </Button>
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={auditWrite}
+              onChange={(e) => setAuditWrite(e.target.checked)}
+              className="h-3 w-3"
+            />
+            写入
+          </label>
         </div>
       </div>
 
       {/* Graph canvas + Insights side panel */}
       <div className="flex flex-1 min-h-0">
+        {/* Concepts / Temporal audit results */}
+        {(conceptsResult || temporalResult) && (
+          <div className="flex max-h-40 flex-wrap gap-4 overflow-auto border-b bg-muted/30 p-3 text-xs">
+            {conceptsResult && (
+              <div className="min-w-0 flex-1 rounded border border-border bg-background p-2">
+                <div className="mb-1 flex items-center gap-1 font-medium">
+                  <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                  概念审计 (concepts audit)
+                </div>
+                <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                  {conceptsResult.length > 3000
+                    ? conceptsResult.slice(0, 3000) + "\n… (truncated)"
+                    : conceptsResult}
+                </pre>
+              </div>
+            )}
+            {temporalResult && (
+              <div className="min-w-0 flex-1 rounded border border-border bg-background p-2">
+                <div className="mb-1 flex items-center gap-1 font-medium">
+                  <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                  时序事实 (temporal-facts audit)
+                </div>
+                <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                  {temporalResult.length > 3000
+                    ? temporalResult.slice(0, 3000) + "\n… (truncated)"
+                    : temporalResult}
+                </pre>
+              </div>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 shrink-0 self-start p-0"
+              onClick={() => { setConceptsResult(null); setTemporalResult(null) }}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        )}
         {/* Graph canvas */}
         <div ref={graphContainerRef} className="relative flex-1 min-w-0 overflow-hidden bg-slate-50 dark:bg-slate-950">
           {isResizing ? (
@@ -794,11 +902,6 @@ export function GraphView() {
                       const isActive = highlightedNodes.size > 0 &&
                         [...ids].every((id) => highlightedNodes.has(id)) &&
                         [...highlightedNodes].every((id) => ids.has(id))
-                      const researchTopic = gap.type === "sparse-community"
-                        ? `Knowledge area: ${gap.title.replace("Sparse cluster: ", "")}`
-                        : gap.type === "bridge-node"
-                          ? `Key concept: ${gap.title.replace("Key bridge: ", "")}`
-                          : gap.title
                       return (
                         <div
                           key={i}

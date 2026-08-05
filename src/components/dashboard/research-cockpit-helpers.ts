@@ -161,7 +161,7 @@ export function mergeSignalSourceListRuns(
       : selectedCandidateIndex >= 0
         ? selectedCandidateIndex
         : 0
-  const sources = mergedSources.map((source, index) => ({
+  const sources: Array<Record<string, unknown>> = mergedSources.map((source, index) => ({
     ...source,
     isSelectedCandidate: index === defaultIndex,
   }))
@@ -1931,7 +1931,7 @@ export function mergeSignalTodoRecord(existing: Record<string, unknown>, incomin
   const incomingCreatedAt = textValue(incoming.createdAt, "")
   const strongerStatus = pickStrongerSignalField(existing.suggestedStatus, incoming.suggestedStatus)
   const preferIncomingStatus = strongerStatus === incoming.suggestedStatus
-  const mergedCount = Math.max(1, numberValue(existing.mergedCount, 1)) + Math.max(1, numberValue(incoming.mergedCount, 1))
+  const mergedCount = Math.max(1, numberValue(existing.mergedCount)) + Math.max(1, numberValue(incoming.mergedCount))
   const mergedReason = firstFilled(
     preferIncomingStatus ? incoming.reason : existing.reason,
     preferIncomingStatus ? incoming.suggestedStatusReason : existing.suggestedStatusReason,
@@ -3932,6 +3932,7 @@ export function shouldRunLlmReviewAfterRules({
 export function buildReviewModeSummary({
   llmReviewStatus,
   llmReviewReason,
+  llmReviewError,
   autoRefresh,
   running,
   runningKind,
@@ -3939,6 +3940,7 @@ export function buildReviewModeSummary({
 }: {
   llmReviewStatus?: unknown
   llmReviewReason?: unknown
+  llmReviewError?: unknown
   autoRefresh?: boolean
   running?: boolean
   runningKind?: unknown
@@ -3987,10 +3989,15 @@ export function buildReviewModeSummary({
     }
   }
   if (status === "error" || status === "failed") {
+    const errorDetail = compactDisplayText(llmReviewError, "", 200)
     return {
       label: "LLM复核失败",
-      detail: "规则扫描结果仍可看；需要时可重试 LLM 复核。",
-      nextAction: "可以先按规则结果处理高优先级卡片，或重试 LLM 复核。",
+      detail: errorDetail
+        ? `规则扫描结果仍可看；复核失败原因：${errorDetail}`
+        : "规则扫描结果仍可看；需要时可重试 LLM 复核。",
+      nextAction: errorDetail
+        ? `失败原因：${errorDetail}。可检查 LLM 配置后重试，或先按规则结果处理卡片。`
+        : "可以先按规则结果处理高优先级卡片，或重试 LLM 复核。",
       tone: "error",
       canReviewWithLlm: true,
     }
@@ -5057,7 +5064,7 @@ export function buildSignalCardAskResultBackfill(input: {
   const gap = compactDisplayText(summary.gap, "", 140)
   const decisionHeadline = compactDisplayText(decision.headline, "", 80)
   const focus = compactDisplayText(decision.focus, ranking || beneficiary || stocks || stage || conclusion, 150)
-  const primaryAction = compactDisplayText(decision.primaryAction, summary.nextAction || "", 110)
+  const primaryAction = compactDisplayText(decision.primaryAction, (summary.nextAction || "") as string, 110)
   const risk = compactDisplayText(decision.risk, gap || "仍需回看来源、公告、量价和二次确认。", 150)
   const sourceCount = Math.max(0, numberValue(input.sourceCount))
   const ready = Boolean(stocks)
@@ -6187,7 +6194,6 @@ function pmFocusTargetTitle(queueSummary: PmDecisionQueueSummary) {
 
 export function buildPmDecisionQueueSummary({
   totalCount,
-  priorityCount,
   confirmableCount,
   askRecommendedCount,
   trackedReviewCount = 0,
@@ -7078,7 +7084,7 @@ export function buildObservationQueueDraft({
   const refs = [...new Set([
     ...stringList(sourceRefs),
     wikiFrame?.sourceRef,
-  ].filter(Boolean))]
+  ].filter((item): item is string => Boolean(item)))]
   return {
     key: id || fallbackKey,
     hypothesisId: id,

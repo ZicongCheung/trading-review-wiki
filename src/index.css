@@ -376,3 +376,15 @@
 [data-theme] .milkdown-theme-nord .ProseMirror {
   background-color: transparent;
 }
+
+/* Hide the scrollbar on the icon sidebar while keeping it scrollable
+   (wheel / trackpad / touch long-press swipe). Used when nav items
+   overflow the available height so the bottom area (daemon / settings
+   / switch project) is never pushed out of view. */
+.scrollbar-narrow {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-narrow::-webkit-scrollbar {
+  display: none;
+}

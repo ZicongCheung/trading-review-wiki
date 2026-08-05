@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { runResearchCockpitCommand, type ResearchCockpitAction } from "@/commands/research-cockpit"
+import { TrainingFlywheelExtras } from "@/components/training/training-flywheel-extras"
 import { useWikiStore } from "@/stores/wiki-store"
 import { cn } from "@/lib/utils"
 
@@ -1095,7 +1096,7 @@ interface CollectionResultFocusNotice {
   detail: string
   trajectoryId?: string | null
   collectionResultId?: string | null
-  tone: "good" | "warn"
+  tone: "neutral" | "good" | "warn" | "danger"
 }
 
 export interface ReviewRefreshResult {
@@ -5793,6 +5794,8 @@ export function TrainingFlywheelView() {
           </aside>
         </main>
 
+        <TrainingFlywheelExtras />
+
         <footer className="grid gap-3 border-t pt-4 md:grid-cols-5">
           <StatusPanel title="Benchmark 覆盖" value={status?.counts?.benchmarkBatches ?? 0} detail={benchmarkDetail(status?.dynamicBenchmark, status?.latest?.benchmarkManifest, status?.artifactSourceMix?.benchmark)} />
           <StatusPanel title="LoRA-ready 准备度" value={status?.counts?.adapterCandidates ?? 0} detail={loraReadyDetail(status?.adapterCurriculum, status?.counts?.loraReadyBatches, status?.latest?.loraReadyManifest, status?.artifactSourceMix?.loraReady)} />
@@ -6330,7 +6333,7 @@ function SampleDensityAuditPanel({
     thin: "偏薄",
     watch: "观察",
     ready: "可推进",
-  }[audit.status ?? ""] ?? "未知"
+  }[(audit.status ?? "") as string] ?? "未知"
   const previewCount = counts.paperTradeAgentPreviewCandidates ?? 0
   const renderFirstSampleGuideButton = (
     action: SampleDensityFirstSampleGuideAction,
@@ -9376,7 +9379,7 @@ function profitOutcomeLabel(outcome?: string) {
   return PROFIT_OUTCOME_LABELS[outcome] ?? outcome
 }
 
-function formatPercent(value?: number) {
+function formatPercent(value?: number | null) {
   if (typeof value !== "number" || !Number.isFinite(value)) return ""
   return `${value.toFixed(1)}%`
 }
@@ -10088,7 +10091,7 @@ export function buildProfitFeedbackReviewWorklist<T extends { id: string; profit
       actionLabel,
       tone: definition.tone,
     }
-  }).filter((item): item is ProfitFeedbackReviewWorklistItem => Boolean(item))
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item))
 }
 
 function fallbackReviewActionForTrajectory(
@@ -12244,11 +12247,6 @@ function normalizeBoundaryText(value?: string | null) {
   return value?.replace(/[_-]+/g, " ").trim() ?? ""
 }
 
-function addUniqueBoundaryText(target: string[], value?: string | null) {
-  const text = normalizeBoundaryText(value)
-  if (text && !target.includes(text)) target.push(text)
-}
-
 function addUniqueLearningSignal(
   target: PeftBoundaryReview["learns"],
   seen: Set<string>,
@@ -12688,7 +12686,7 @@ function profitTrainingUseLabel(use?: ProfitFeedbackDistillationHint["trainingUs
     adapter_candidate_after_review: "复核后 adapter",
     eval_preference_negative: "eval/preference/负样本",
     monitor_until_settled: "继续观察",
-  }[use ?? ""] ?? use ?? ""
+  }[(use ?? "") as string] ?? use ?? ""
 }
 
 function TrajectoryDetail({

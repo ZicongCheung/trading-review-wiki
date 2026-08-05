@@ -31,7 +31,17 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 4. ALSO ignore runtime data dirs: ingest writes debug.log / checkpoint /
+      //    queue json into the project's `.llm-wiki` and `zTradingData` every few
+      //    seconds, and Vite's HMR full-reload would otherwise nuke the running
+      //    ingest queue (resetting its in-memory state → infinite retry loop).
+      ignored: [
+        "**/src-tauri/**",
+        "**/zTradingData/**",
+        "**/.llm-wiki/**",
+        "**/wiki/**",
+        "**/raw/**",
+      ],
     },
   },
 

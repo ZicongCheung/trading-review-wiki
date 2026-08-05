@@ -132,7 +132,10 @@ wiki/
 \`\`\`
 
 **每页必须包含 YAML frontmatter**：
-\`\`\`yaml
+
+> ⚠️ **重要**：frontmatter 直接以 \`---\` 开头和结尾，**不要**用 \` \`\`\`yaml \` 代码块包裹。文件第一行必须是 \`---\`，不是 \` \`\`\`yaml \`。
+
+\`\`\`
 ---
 title: 页面标题
 created: YYYY-MM-DD
@@ -1397,7 +1400,10 @@ wiki/
 \`\`\`
 
 **每页必须包含 YAML frontmatter**：
-\`\`\`yaml
+
+> ⚠️ **重要**：frontmatter 直接以 \`---\` 开头和结尾，**不要**用 \` \`\`\`yaml \` 代码块包裹。文件第一行必须是 \`---\`，不是 \` \`\`\`yaml \`。
+
+\`\`\`
 ---
 title: 页面标题
 created: YYYY-MM-DD

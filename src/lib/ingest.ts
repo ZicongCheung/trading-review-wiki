@@ -1,5 +1,6 @@
 import { readFile, writeFile, listDirectory } from "@/commands/fs"
-import { streamChat } from "@/lib/llm-client"
+import { streamChat, DEEPSEEK_AUX_MODEL } from "@/lib/llm-client"
+import type { ChatMessage } from "@/lib/llm-providers"
 import type { LlmConfig } from "@/stores/wiki-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useChatStore } from "@/stores/chat-store"
@@ -24,7 +25,6 @@ import {
   canonicalSampleFor,
   cleanSources,
   normalizeTypeAlias,
-  inferTypeFromPath,
   nowLocalTimestamp,
   parseFrontmatter,
   serializeFrontmatter,
@@ -35,10 +35,146 @@ import {
 } from "@/lib/schema"
 import { lookupStockCode } from "@/commands/stock-codes"
 import { appendDailyLog, dailyLogPath, localDateString, mergeIndexEntries, type IndexEntryInput } from "@/lib/wiki-housekeeping"
+import {
+  compactConversation,
+  isPastDeepSeekCacheTtl,
+  getLastDeepSeekRequestAt,
+} from "@/lib/llm-client"
 
 export const LANGUAGE_RULE = "## Language Rule\n- ALWAYS match the language of the source document. If the source is in Chinese, write in Chinese. If in English, write in English. Wiki page titles, content, and descriptions should all be in the same language as the source material."
 
-interface PlanCreateItem {
+/**
+ * 在发送累积历史前，根据 provider 与历史规模决定是否压缩（prefix-preserving compaction）。
+ * - 非 DeepSeek：仅当轮次超过阈值时压缩（通用保护）。
+ * - DeepSeek：轮次超阈值 OR 距上次请求超 TTL 时压缩（冷恢复）。
+ * 压缩始终保留冻结 system 前缀（compactConversation 内保证）。
+ */
+function prepareIngestHistory(
+  messages: ChatMessage[],
+  llmConfig: LlmConfig,
+  now: number = Date.now(),
+): ChatMessage[] {
+  const MAX_ROUNDS_BEFORE_COMPACT = 8
+  // 统计 user/assistant 轮次
+  let rounds = 0
+  for (const m of messages) {
+    if (m.role === "assistant") rounds++
+  }
+  const needsCompactBySize = rounds > MAX_ROUNDS_BEFORE_COMPACT
+  const coldResume =
+    llmConfig.provider === "deepseek" && isPastDeepSeekCacheTtl(getLastDeepSeekRequestAt(), now)
+  if (needsCompactBySize || coldResume) {
+    return compactConversation(messages, { keepRecentRounds: 4 })
+  }
+  return messages
+}
+
+/**
+ * Fixed system-prefix shared by ALL ingest stages (analysis / plan / create / update / retry).
+ *
+ * Cache strategy (DeepSeek prefix-cache aware, see Reasonix-style "stable environment
+ * summary first"): every request must begin with this identical, immutable block so the
+ * provider can cache the whole prefix and only bill/process the variable tail. Therefore
+ * NO per-file or per-call variable (timestamps, file names, paths, index, schema dumps)
+ * may appear here — those go into the `user` message instead.
+ *
+ * Maintain stability: do not edit the wording casually; any change invalidates the cached
+ * prefix for all in-flight sessions.
+ */
+/**
+ * Fixed system-prefix shared by ALL ingest stages (analysis / plan / create / update / retry).
+ *
+ * Cache strategy (DeepSeek prefix-cache aware, see Reasonix-style "stable environment summary
+ * first"): every request MUST begin with this identical, immutable block so the provider can
+ * cache the whole prefix and only bill/process the variable tail. Therefore NO per-file or
+ * per-call variable (timestamps, file names, paths, index, schema dumps) may appear here — those
+ * go into the `user` message instead.
+ *
+ * This prefix is intentionally large (well above DeepSeek's ~384-token prefix-cache threshold) so
+ * that a STABLE prefix is shared across requests, dramatically cutting the cache-miss rate.
+ *
+ * IMPORTANT: the array below must stay BYTE-IDENTICAL to `COMMON_PREFIX` in
+ * scripts/ingest-pdf-standalone.cjs. A cache-guard unit test enforces this; if you edit one, edit
+ * both. The standalone script cannot import this TS module, so the literal is duplicated on purpose.
+ */
+export function buildIngestCommonPrefix(): string {
+  return [
+    "You are an expert wiki knowledge-base agent for a trading-review system.",
+    "You read source documents (research reports, filings, notes) and produce or update",
+    "structured wiki pages with YAML frontmatter.",
+    "",
+    "## Language Rule",
+    "- ALWAYS match the language of the source document. If the source is in Chinese, write in Chinese. If in English, write in English. Wiki page titles, content, and descriptions should all be in the same language as the source material.",
+    "",
+    "## Global output conventions",
+    "- Output FILE blocks exactly as: `---FILE: <path>---` ... content ... `---END FILE---`.",
+    "- Never wrap frontmatter in a ```yaml fenced block — emit the bare `---` delimiters only.",
+    "- Never delete or shorten existing content when updating; you MAY add or refine.",
+    "- Use [[wikilink]] syntax (e.g. `[[type/name]]`) for cross-references.",
+    "- Be concrete and exhaustive; never silently drop pages the source implies.",
+    "- Preserve all delimiter markers exactly; do not add commentary outside FILE/REVIEW blocks.",
+    "",
+    "## Frontmatter schema (Schema v1) — reference",
+    "Every page MUST begin with YAML frontmatter delimited by `---` (bare, never fenced).",
+    "",
+    "Required fields:",
+    "- `schema_version: 1`",
+    "- `title` — human-readable page title (matches the file name without `.md`).",
+    "- `type` — one of: 股票 / 概念 / 策略 / 模式 / 错误 / 人物 / 总结 / 查询 / 源文档.",
+    "- `summary` — 50–120 字高度概括，便于检索召回，严禁照搬正文段落。",
+    "- `created`, `updated`, `last_reviewed` — format `YYYY-MM-DD HH:mm:ss`.",
+    "- `confidence` — one of: 高 / 中 / 低.",
+    "- `status` — one of: 活跃 / 观察 / 归档 / 废弃.",
+    "- `sources` — array of source file names (without `.md`) this page derives from.",
+    "",
+    "## Directory mapping (stable)",
+    "- 股票 → wiki/股票/ , 概念 → wiki/概念/ , 策略 → wiki/策略/ , 模式 → wiki/模式/.",
+    "- 错误 → wiki/错误/ , 人物 → wiki/人物/ , 总结 → wiki/总结/ , 市场环境 → wiki/市场环境/ , 进化 → wiki/进化/.",
+    "- Use Chinese directory names; never use English equivalents (e.g. wiki/股票/, not wiki/stocks/).",
+    "- Filenames: kebab-case for ASCII; preserve original Chinese names for CJK titles.",
+    ].join("\n")
+  }
+
+  /**
+   * Build the system prompt for the ANALYZE stage. The frozen `buildIngestCommonPrefix()` is
+   * always prepended so every ingest stage shares one large cache-stable prefix (DeepSeek APC).
+   * Stage-specific instructions are appended AFTER the prefix, never replacing it.
+   */
+  export function buildAnalyzeSystemPrompt(opts: {
+    purpose?: string
+    schema?: string
+    index?: string
+  }): string {
+    return [
+      buildIngestCommonPrefix(),
+      "You are a knowledgeable assistant helping to build a wiki from source documents.",
+      "",
+      LANGUAGE_RULE,
+      opts.purpose ? `## Wiki Purpose\n${opts.purpose}` : "",
+      opts.schema ? `## Wiki Schema\n${opts.schema}` : "",
+      opts.index ? `## Current Wiki Index\n${opts.index}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+  }
+
+  /**
+   * Build the system prompt for the WRITE stage. Same frozen prefix as analyze so the big
+   * common prefix is reused across stages instead of being re-sent in full each time.
+   */
+  export function buildWriteSystemPrompt(opts: { schema?: string }): string {
+    return [
+      buildIngestCommonPrefix(),
+      "You are a wiki generation assistant. Your task is to produce structured wiki file contents.",
+      "",
+      LANGUAGE_RULE,
+      opts.schema ? `## Wiki Schema\n${opts.schema}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+  }
+
+  interface PlanCreateItem {
   path: string
   type: string
   title: string
@@ -268,6 +404,42 @@ export async function autoIngest(
     activity.updateStage(activityId, 2, { status: "done" })
   }
 
+  // ── Pre-filter: drop 股票 pages whose name has no match in the stock-code DB ──
+  // Schema requires `code` to come from the DB (LLM-written values are discarded),
+  // so a DB miss is unrecoverable — LLM retries only waste tokens. This catches
+  // placeholder names the LLM invents from research reports, e.g. "食品饮料行业龙头A".
+  const skippedStockPages: Array<{ path: string; action: "update" | "create"; why?: string }> = []
+  const stockPageResolvable = async (path: string): Promise<boolean> => {
+    if (!path.startsWith("wiki/股票/")) return true
+    const name = path.split("/").pop()?.replace(/\.md$/i, "").trim() ?? ""
+    if (!name) return true
+    try {
+      const code = await lookupStockCode(pp, name)
+      return code != null
+    } catch {
+      // DB unavailable → don't block the plan; repairBlock will decide later
+      return true
+    }
+  }
+  {
+    const keptUpdates: typeof plan.update = []
+    for (const u of plan.update) {
+      if (await stockPageResolvable(u.path)) keptUpdates.push(u)
+      else skippedStockPages.push({ path: u.path, action: "update", why: u.why })
+    }
+    const keptCreates: typeof plan.create = []
+    for (const c of plan.create) {
+      if (await stockPageResolvable(c.path)) keptCreates.push(c)
+      else skippedStockPages.push({ path: c.path, action: "create", why: c.why })
+    }
+    if (skippedStockPages.length > 0) {
+      plan = { ...plan, update: keptUpdates, create: keptCreates }
+      debugLog("warn", "ingest-plan", `跳过 ${skippedStockPages.length} 个 DB 查不到代码的股票页（不消耗 LLM 调用）`, {
+        skipped: skippedStockPages.map((s) => s.path),
+      })
+    }
+  }
+
   // Materialize plan into store so the UI can render per-page sub-rows
   // Pre-mark items already completed in a prior run (from checkpoint)
   const completedUpdates = new Set(checkpoint.completedUpdates ?? [])
@@ -296,6 +468,15 @@ export async function autoIngest(
         : "pending",
       error: stage4DoneAlready && !stage4Written.has(c.path) ? "Not written in Stage 4" : undefined,
       stage: 4,
+    })),
+    ...skippedStockPages.map((s, i): PlanItem => ({
+      id: `skip-${i}`,
+      action: s.action,
+      path: s.path,
+      why: s.why,
+      status: "error",
+      error: "DB 中查不到该股票代码，已跳过（未消耗 LLM 调用）。如是真实股票请在 Settings 刷新股票代码库",
+      stage: s.action === "update" ? 3 : 4,
     })),
     ...HOUSEKEEPING_PATHS.map((p): PlanItem => ({
       id: `h-${p.replace(/[\/.]/g, "-")}`,
@@ -648,12 +829,25 @@ async function runAnalysisStage(
   await streamChat(
     llmConfig,
     [
-      { role: "system", content: buildAnalysisPrompt(purpose, index) },
+      { role: "system", content: buildIngestCommonPrefix() },
       {
         role: "user",
-        content: `Analyze this source document:\n\n**File:** ${fileName}${
-          folderContext ? `\n**Folder context:** ${folderContext}` : ""
-        }\n\n---\n\n${truncatedContent}`,
+        // Reasonix: identical system across all stages; the large, per-file-stable
+        // source text leads the user message so it becomes a shared cache prefix
+        // reused by the create stage (which also leads with the same text).
+        content: [
+          truncatedContent,
+          "---",
+          `**File:** ${fileName}${
+            folderContext ? `\n**Folder context:** ${folderContext}` : ""
+          }`,
+          "",
+          "Analyze this source document.",
+          "",
+          buildAnalysisPrompt(purpose, index),
+          "",
+          `**Current timestamp:** ${nowLocalTimestamp()}`,
+        ].join("\n"),
       },
     ],
     {
@@ -683,7 +877,7 @@ async function runPlanStage(
   analysis: string,
   schema: string,
   index: string,
-  wikiDirs: string[],
+  _wikiDirs: string[],
   signal: AbortSignal | undefined,
   onToken?: (token: string) => void,
 ): Promise<Plan> {
@@ -696,16 +890,20 @@ async function runPlanStage(
     [
       {
         role: "system",
-        content: buildPlanPrompt(schema, index, wikiDirs, fileName, sourceBaseName),
+        content: buildIngestCommonPrefix(),
       },
       {
         role: "user",
         content: [
           `Source file: **${fileName}**`,
+          `Source base name: **${sourceBaseName}**`,
+          `Current timestamp: ${nowLocalTimestamp()}`,
           "",
           "## Source analysis",
           "",
           analysis,
+          "",
+          buildPlanPrompt(schema, index, _wikiDirs),
         ].join("\n"),
       },
     ],
@@ -745,12 +943,16 @@ async function runUpdateStage(
   await streamChat(
     llmConfig,
     [
-      { role: "system", content: buildUpdatePrompt(page, nowLocalTimestamp()) },
+      { role: "system", content: buildIngestCommonPrefix() },
       {
         role: "user",
         content: [
+          `## Page to update: ${page.path}`,
+          "",
           `## Why this page is being updated`,
           page.why ?? "(no explicit reason from plan)",
+          "",
+          `## Current timestamp: ${nowLocalTimestamp()}`,
           "",
           `## Existing content of ${page.path}`,
           existingContent,
@@ -760,6 +962,8 @@ async function runUpdateStage(
           "",
           `## Source filename`,
           fileName,
+          "",
+          buildUpdatePrompt(page),
         ].join("\n"),
       },
     ],
@@ -794,7 +998,7 @@ async function runCreateStage(
   purpose: string,
   index: string,
   overview: string,
-  wikiDirs: string[],
+  _wikiDirs: string[],
   signal: AbortSignal | undefined,
   onToken?: (token: string) => void,
 ): Promise<string> {
@@ -807,20 +1011,28 @@ async function runCreateStage(
     [
       {
         role: "system",
-        content: buildCreatePrompt(plan, schema, purpose, index, overview, wikiDirs, fileName, sourceBaseName, nowLocalTimestamp()),
+        content: buildIngestCommonPrefix(),
       },
       {
         role: "user",
+        // Reasonix: identical system across stages; lead with the same source text
+        // the analysis stage used so its cached KV is reused here (shared prefix).
         content: [
+          truncatedContent,
+          "---",
+          `**File:** ${fileName}`,
+          `Source base name: **${sourceBaseName}** — every generated wiki page MUST include this in its \`sources\` frontmatter field.`,
+          `Source summary page is **wiki/源文档/${sourceBaseName}.md** (when in the create list). Type for that page is \`源文档\`.`,
+          "",
           `Generate only the wiki content pages listed in the plan. The app will update index, overview, and daily logs automatically.`,
+          "",
+          buildCreatePrompt(plan, schema, purpose, index, overview),
           "",
           "## Source analysis",
           "",
           analysis,
           "",
-          "## Original source content",
-          "",
-          truncatedContent,
+          `**Current timestamp:** ${nowLocalTimestamp()}`,
         ].join("\n"),
       },
     ],
@@ -1029,14 +1241,10 @@ function buildPlanPrompt(
   schema: string,
   index: string,
   wikiDirs: string[],
-  fileName: string,
-  sourceBaseName: string,
 ): string {
   return [
     "You are a wiki maintainer. Based on the source analysis you will receive, output a JSON plan",
     "listing exactly which wiki pages need to be created or updated.",
-    "",
-    LANGUAGE_RULE,
     "",
     "## Output format (CRITICAL)",
     "",
@@ -1060,7 +1268,6 @@ function buildPlanPrompt(
     `- If Chinese directories exist (e.g. wiki/股票/, wiki/策略/, wiki/模式/), you MUST use them and NEVER use English equivalents (wiki/stocks/, wiki/strategies/, wiki/patterns/).`,
     `- Map types: 股票→wiki/股票/, 策略→wiki/策略/, 模式→wiki/模式/, 错误→wiki/错误/, 市场环境→wiki/市场环境/, 进化→wiki/进化/, 总结→wiki/总结/.`,
     `- Filenames inside subdirectories must be kebab-case for ASCII; preserve original Chinese for Chinese names. e.g. wiki/股票/沃格光电.md.`,
-    `- The source summary page **wiki/sources/${sourceBaseName}.md** MUST appear in the plan (in \`create\` if new, or \`update\` if it already exists in the index).`,
     `- DO NOT include wiki/index.md, wiki/overview.md, or wiki/log.md in the plan — the system handles those automatically in the create stage.`,
     "",
     "## CRITICAL: Don't drop recommended pages",
@@ -1081,7 +1288,7 @@ function buildPlanPrompt(
     .join("\n")
 }
 
-function buildSchemaSection(types: WikiType[], nowTs: string): string {
+function buildSchemaSection(types: WikiType[]): string {
   const uniq = Array.from(new Set(types.length > 0 ? types : (["概念"] as WikiType[])))
   const samples = uniq
     .map((t) => `### Canonical sample (type=${t})\n\n${canonicalSampleFor(t)}`)
@@ -1097,9 +1304,7 @@ function buildSchemaSection(types: WikiType[], nowTs: string): string {
     "- `title` — must match the file name (without `.md`)",
     `- \`type\` — one of: ${WIKI_TYPES.join(" / ")}`,
     "- `summary` — 50–120 字概括，**严禁照搬正文段落**；只做高度概括，便于检索召回",
-    "- `created`, `updated`, `last_reviewed` — format `YYYY-MM-DD HH:mm:ss`. Use `" +
-      nowTs +
-      "` for new fields; preserve existing `created`.",
+    "- `created`, `updated`, `last_reviewed` — format `YYYY-MM-DD HH:mm:ss`. Use the current timestamp (supplied in the user message) for new fields; preserve existing `created`.",
     `- \`confidence\` — one of: ${CONFIDENCE.join(" / ")}`,
     `- \`status\` — one of: ${WIKI_STATUS.join(" / ")}`,
     "",
@@ -1123,31 +1328,29 @@ function buildSchemaSection(types: WikiType[], nowTs: string): string {
   ].join("\n")
 }
 
-function buildUpdatePrompt(page: PlanUpdateItem, nowTs: string): string {
-  const type = inferTypeFromPath(page.path)
+function buildUpdatePrompt(page: PlanUpdateItem): string {
+  const type = normalizeTypeAlias(inferTypeFromPath(page.path)) ?? "总结"
   return [
     "You are updating an existing wiki page with new information from a source.",
-    "",
-    LANGUAGE_RULE,
     "",
     "## CRITICAL RULES",
     "",
     "1. **Preserve ALL existing content.** Every section, every fact, every [[wikilink]],",
     "   every frontmatter field must remain. You MAY add, refine, or update wording — you",
     "   MUST NOT delete or shorten existing content.",
-    `2. Set the \`updated\` field to \`${nowTs}\`. Preserve \`created\`.`,
+    "2. Set the `updated` field to the current timestamp (supplied in the user message). Preserve `created`.",
     "3. Add the source filename (without `.md`) to the `sources` array if not already present.",
     "4. Keep `type` and `created` unchanged. If the existing frontmatter is missing required fields, fill them per the schema below.",
     "5. Output exactly ONE FILE block containing the FULL merged page:",
     "",
-    "   ---FILE: " + page.path + "---",
+    "   ---FILE: <the page path provided in the user message>---",
     "   (full updated content, including frontmatter)",
     "   ---END FILE---",
     "",
     "Do NOT output any other text outside the FILE block.",
     "Do NOT wrap the frontmatter in ```yaml ... ``` — emit the bare `---` delimiters only.",
     "",
-    buildSchemaSection([type], nowTs),
+    buildSchemaSection([type]),
   ].join("\n")
 }
 
@@ -1157,10 +1360,6 @@ function buildCreatePrompt(
   purpose: string,
   index: string,
   overview: string,
-  wikiDirs: string[],
-  fileName: string,
-  sourceBaseName: string,
-  nowTs: string,
 ): string {
   const createList = plan.create.length > 0
     ? plan.create
@@ -1181,11 +1380,6 @@ function buildCreatePrompt(
     "You are a wiki maintainer. Generate only the new wiki content files listed below.",
     "Do NOT output wiki/index.md, wiki/overview.md, wiki/log.md, or wiki/logs/**.",
     "",
-    LANGUAGE_RULE,
-    "",
-    `## Source File: ${fileName}`,
-    `All wiki pages generated MUST include "${sourceBaseName}" in their frontmatter \`sources\` field.`,
-    "",
     "## Pages to create (from the plan)",
     "",
     createList,
@@ -1202,14 +1396,7 @@ function buildCreatePrompt(
     `1. Each page from the create list above (do not skip any).`,
     `2. Do not output housekeeping files. The app will merge index.md, overview.md, and daily logs after content pages are written.`,
     "",
-    buildSchemaSection(typesInPlan, nowTs),
-    "",
-    `Source summary page is **wiki/源文档/${sourceBaseName}.md** (when in the create list). Type for that page is \`源文档\`.`,
-    "",
-    "Other rules:",
-    "- Use [[wikilink]] syntax for cross-references between pages",
-    "- Filenames inside subdirectories: preserve the original Chinese title for CJK names, kebab-case for ASCII",
-    `- Available directories: ${wikiDirs.length > 0 ? wikiDirs.join(", ") : "wiki/股票/, wiki/概念/"}`,
+    buildSchemaSection(typesInPlan),
     "",
     "## Review Items (optional)",
     "",
@@ -1348,38 +1535,39 @@ function buildRetryPrompt(
   violations: SchemaViolation[],
   type: WikiType,
   attemptNum: number,
-): string {
+): { system: string; user: string } {
   const bullets = violations.map((v) => `- ${v.field}: ${v.message}`).join("\n")
-  return [
-    `[Retry attempt ${attemptNum}/${SCHEMA_RETRY_MAX}] Your previous FILE block had these schema violations:`,
-    bullets,
-    "",
+  // Stable rules go into system (prefix-cache friendly); all per-attempt
+  // variables (attempt number, violations, file block, sample) go into user.
+  const system = [
+    "Your previous FILE block had schema violations that must be fixed.",
     "Preserve ALL body content below the closing `---` delimiter exactly as-is — do NOT rewrite the prose.",
     "ONLY fix the frontmatter to satisfy the schema. Never wrap the frontmatter in ```yaml.",
-    "",
-    "--- Previous FILE block ---",
-    `---FILE: ${block.path}---`,
-    block.content,
-    "---END FILE---",
-    "",
-    `--- Canonical sample for type "${type}" ---`,
-    canonicalSampleFor(type),
-    "",
     "Output the corrected FILE block now, including `---FILE:` and `---END FILE---` markers. Do not modify any body content.",
+    "",
+    buildSchemaSection([type]),
   ].join("\n")
+  const user = `Retry attempt ${attemptNum}/${SCHEMA_RETRY_MAX}. Schema violations to fix:\n${bullets}\n\n--- Previous FILE block ---\n---FILE: ${block.path}---\n${block.content}\n---END FILE---\n\n--- Canonical sample for type "${type}" ---\n${canonicalSampleFor(type)}`
+  return { system, user }
 }
 
 async function runRetryRequest(
   llmConfig: LlmConfig,
-  prompt: string,
+  prompt: { system: string; user: string },
   signal: AbortSignal | undefined,
 ): Promise<string> {
   let raw = ""
   let failed = false
   let failMsg = ""
+  // 辅助调用（schema 重试）钉死到最便宜的 flash 模型，仅在 DeepSeek 下生效（P2）
+  const auxOptions =
+    llmConfig.provider === "deepseek" ? { modelOverride: DEEPSEEK_AUX_MODEL } : undefined
   await streamChat(
     llmConfig,
-    [{ role: "system", content: prompt }],
+    [
+      { role: "system", content: `${buildIngestCommonPrefix()}\n\n${prompt.system}` },
+      { role: "user", content: prompt.user },
+    ],
     {
       onToken: (t) => {
         raw += t
@@ -1391,6 +1579,7 @@ async function runRetryRequest(
       },
     },
     signal,
+    auxOptions,
   )
   if (failed) throw new Error(failMsg)
   return raw
@@ -1416,12 +1605,14 @@ async function repairBlock(
     // Default schema_version
     if (fm.schema_version == null) fm.schema_version = SCHEMA_VERSION
 
-    // Normalize type
+    // Normalize type — path-derived value may be a non-type dir (e.g. "sources")
     if (fm.type) {
       const norm = normalizeTypeAlias(String(fm.type))
       if (norm) fm.type = norm
-    } else {
-      fm.type = inferTypeFromPath(block.path)
+    }
+    if (!fm.type || !WIKI_TYPES.includes(fm.type as WikiType)) {
+      const pathType = normalizeTypeAlias(inferTypeFromPath(block.path)) ?? "总结"
+      fm.type = WIKI_TYPES.includes(pathType as WikiType) ? pathType : "总结"
     }
 
     // Default last_reviewed to updated (or now) when missing
@@ -1429,6 +1620,67 @@ async function repairBlock(
     if (!fm.created) fm.created = nowTs
     if (!fm.updated) fm.updated = nowTs
     if (!fm.last_reviewed) fm.last_reviewed = fm.updated
+
+    // Fallbacks for missing required fields: better a valid placeholder page than
+    // cancelling the entire ingest because the LLM omitted frontmatter.
+    if (!fm.title || typeof fm.title !== "string" || !fm.title.trim()) {
+      const baseName = block.path.split("/").pop()?.replace(/\.md$/i, "") ?? "untitled"
+      fm.title = baseName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2")
+    }
+    {
+      // Summary must sit within the schema window (50-120 code points). Repair not
+      // only when it is missing, but also when it exists yet is too short/too long —
+      // otherwise those blocks bounce to the LLM retry loop unnecessarily.
+      const SUMMARY_MIN = 50
+      const SUMMARY_MAX = 120
+      const cpLen = (s: string) => [...s].length
+      const existing = typeof fm.summary === "string" ? fm.summary.trim() : ""
+      const existingLen = cpLen(existing)
+      if (!existing || existingLen < SUMMARY_MIN || existingLen > SUMMARY_MAX) {
+        if (existingLen > SUMMARY_MAX) {
+          // Too long: truncate by code-point and append an ellipsis (kept within max).
+          fm.summary = [...existing].slice(0, SUMMARY_MAX - 1).join("").trim() + "…"
+        } else {
+          // Missing or too short: keep any existing text as a prefix, then top up
+          // from the body so retrieval still has a meaningful summary.
+          const plain = body
+            .replace(/\[\[.*?\]\]/g, "") // strip wikilinks
+            .replace(/[#*\-\|`]/g, "")   // strip markdown markers
+            .replace(/\s+/g, " ")
+            .trim()
+          let combined = existing
+          if (cpLen(combined) < SUMMARY_MIN && plain) {
+            combined = combined ? `${combined}：${plain}` : plain
+          }
+          const chars = [...combined]
+          if (chars.length >= SUMMARY_MIN) {
+            fm.summary =
+              chars.length > SUMMARY_MAX
+                ? chars.slice(0, SUMMARY_MAX - 1).join("").trim() + "…"
+                : combined
+          } else {
+            // Body also too thin: pad with a neutral filler up to the minimum.
+            const base = combined || "本页由源文档自动生成，待进一步补充"
+            const filler = "，详见正文与来源链接。".repeat(8)
+            fm.summary = [...(base + filler)].slice(0, SUMMARY_MIN).join("")
+          }
+        }
+      }
+    }
+    if (!fm.confidence || !["高", "中", "低"].includes(String(fm.confidence))) {
+      fm.confidence = "低"
+    }
+    if (!fm.status || !["活跃", "观察", "归档", "废弃"].includes(String(fm.status))) {
+      fm.status = "观察"
+    }
+
+    // Marker: prove the fixed repairBlock (with required-field fallbacks) is loaded.
+    debugLog("info", "ingest-repair", `repairBlock 已为 ${block.path} 补全缺失必填字段`, {
+      title: fm.title,
+      summaryLen: typeof fm.summary === "string" ? [...fm.summary].length : 0,
+      confidence: fm.confidence,
+      status: fm.status,
+    })
 
     // Clean sources
     if (Array.isArray(fm.sources)) {
@@ -1666,54 +1918,6 @@ export function tryExtractImplicitBlock(text: string, expectedPath: string): Fil
   return { path: expectedPath, content: stripped }
 }
 
-/**
- * If `expectedPath` is provided, only the FILE block matching it is written.
- * If no exact-path block exists but exactly one FILE block was emitted, that
- * block is treated as the intended content and written to expectedPath.
- * Otherwise, all FILE blocks are written.
- */
-async function writeFileBlocks(
-  projectPath: string,
-  text: string,
-  expectedPath?: string,
-): Promise<string[]> {
-  const writtenPaths: string[] = []
-  let blocks = parseFileBlocks(text)
-
-  if (expectedPath) {
-    const exact = blocks.filter((b) => b.path === expectedPath)
-    if (exact.length > 0) {
-      blocks = exact
-    } else if (blocks.length === 1) {
-      // LLM emitted one block with a different/missing path — accept as intended content
-      debugLog("warn", "ingest", `Single FILE block had wrong path, accepting as ${expectedPath}`, {
-        emittedPath: blocks[0].path,
-        expectedPath,
-      })
-      blocks = [{ path: expectedPath, content: blocks[0].content }]
-    } else {
-      blocks = []
-    }
-  }
-
-  for (const { path: relativePath, content } of blocks) {
-    if (!relativePath) continue
-    const fullPath = `${projectPath}/${relativePath}`
-    try {
-      if (isManagedLogPath(relativePath)) {
-        debugLog("warn", "ingest", `Skipping managed log path emitted by LLM: ${relativePath}`)
-        continue
-      }
-      await writeFile(fullPath, content)
-      writtenPaths.push(relativePath)
-    } catch (err) {
-      console.error(`Failed to write ${fullPath}:`, err)
-    }
-  }
-
-  return writtenPaths
-}
-
 const REVIEW_BLOCK_REGEX = /---REVIEW:\s*(\w[\w-]*)\s*\|\s*(.+?)\s*---\n([\s\S]*?)---END REVIEW---/g
 
 function parseReviewBlocks(
@@ -1822,17 +2026,7 @@ export async function startIngest(
 
   const fileName = getFileName(sp)
 
-  const systemPrompt = [
-    "You are a knowledgeable assistant helping to build a wiki from source documents.",
-    "",
-    LANGUAGE_RULE,
-    "",
-    purpose ? `## Wiki Purpose\n${purpose}` : "",
-    schema ? `## Wiki Schema\n${schema}` : "",
-    index ? `## Current Wiki Index\n${index}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n")
+  const systemPrompt = buildAnalyzeSystemPrompt({ purpose, schema, index })
 
   const userMessage = [
     `I'm ingesting the following source file into my wiki: **${fileName}**`,
@@ -1922,19 +2116,18 @@ export async function executeIngestWrites(
 
   let accumulated = ""
 
-  const systemPrompt = [
-    "You are a wiki generation assistant. Your task is to produce structured wiki file contents.",
-    "",
-    LANGUAGE_RULE,
-    schema ? `## Wiki Schema\n${schema}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n")
+  const systemPrompt = buildWriteSystemPrompt({ schema })
+
+  // P1：自动压缩 + TTL 冷恢复（仅 DeepSeek 触发的冷恢复路径会在此折叠历史）
+  const finalMessages = prepareIngestHistory(
+    [{ role: "system", content: systemPrompt }, ...conversationHistory],
+    llmConfig,
+  )
 
   try {
     await streamChat(
       llmConfig,
-      [{ role: "system", content: systemPrompt }, ...conversationHistory],
+      finalMessages,
       {
         onToken: (token) => {
           accumulated += token

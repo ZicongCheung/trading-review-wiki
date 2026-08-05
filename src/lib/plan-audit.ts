@@ -3,7 +3,7 @@ import { streamChat } from "@/lib/llm-client"
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { FileNode } from "@/types/wiki"
 import { useActivityStore } from "@/stores/activity-store"
-import { normalizePath, getRelativePath } from "@/lib/path-utils"
+import { normalizePath } from "@/lib/path-utils"
 import { parseTradeMarkdown, computeDashboardStats, type TradeDayStats } from "@/lib/trade-stats"
 
 export interface PlanAuditResult {

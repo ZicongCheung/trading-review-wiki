@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+.workbuddy/
+zTradingData/
 
 # Local toolchain cache (start.ps1 自动下载的 protoc 等)
 .cache/
@@ -50,3 +52,7 @@ pnpm-debug.log*
 
 # Local Codex/ingest runtime artifacts
 .llm-wiki/
+
+# Local one-off verify artifacts
+scripts/.verify-gui-parse.bundle.mjs
+scripts/.verify-body.ts

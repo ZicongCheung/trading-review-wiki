@@ -223,7 +223,10 @@ export function DashboardView() {
                         axisLine={{ stroke: "hsl(var(--border))" }}
                       />
                       <Tooltip
-                        formatter={(value: number) => [`${value >= 0 ? "+" : ""}${formatMoney(value)}`, "已实现盈亏"]}
+                        formatter={(value) => {
+                          const v = value as number
+                          return [`${v >= 0 ? "+" : ""}${formatMoney(v)}`, "已实现盈亏"] as [string, string]
+                        }}
                         contentStyle={{
                           backgroundColor: "hsl(var(--card))",
                           borderColor: "hsl(var(--border))",

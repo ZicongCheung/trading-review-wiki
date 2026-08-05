@@ -29,6 +29,7 @@ import {
 } from "./ask-flow.mjs"
 import { apiRunIngest, applyManifest } from "./ingest.mjs"
 import { fetchJsonWithTimeout, readCompanySecretFromKeychain } from "./data-source.mjs"
+import { writeDeepResearchCompound } from "./compound-feedback.mjs"
 
 export const DEEP_RESEARCH_ROOT = ".llm-wiki/deep-research"
 export const DEEP_RESEARCH_SCHEMA = "deep-research-run-v1"
@@ -606,6 +607,21 @@ export async function runDeepResearch(options = {}) {
   }
   const manifestPath = path.join(outputDir, "manifest.json")
   await writeJson(manifestPath, manifest)
+
+  // E10 复利回灌：深度话题研究结论 → wiki/总结/
+  let compoundPath = null
+  try {
+    compoundPath = await writeDeepResearchCompound({
+      projectPath,
+      generatedAt,
+      topic,
+      answerSnippet: draftContent?.slice(0, 2000) ?? "",
+    })
+    manifest.writePolicy.wroteFormalWiki = true
+    manifest.writePolicy.compoundPath = compoundPath
+  } catch (_) {
+    // 复利回灌失败不阻断主流程
+  }
 
   return {
     ...manifest,

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import {
-  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, TrendingUp, PenLine, BarChart3, Target, Radar, BrainCircuit,
+  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, TrendingUp, PenLine, BarChart3, Target, Radar, BrainCircuit, CalendarClock, Building2, Repeat, Gauge, Wrench, GitBranch,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -102,6 +102,12 @@ const NAV_ITEMS: { view: NavView; icon: typeof FileText; labelKey: string }[] = 
   { view: "graph", icon: Network, labelKey: "nav.graph" },
   { view: "dashboard", icon: BarChart3, labelKey: "nav.dashboard" },
   { view: "research-cockpit", icon: Radar, labelKey: "nav.researchCockpit" },
+  { view: "daily-loop", icon: CalendarClock, labelKey: "nav.dailyLoop" },
+  { view: "company-research", icon: Building2, labelKey: "nav.companyResearch" },
+  { view: "self-question", icon: Repeat, labelKey: "nav.selfQuestion" },
+  { view: "research-console", icon: Gauge, labelKey: "nav.researchConsole" },
+  { view: "data-engineering", icon: Wrench, labelKey: "nav.dataEngineering" },
+  { view: "hypothesis-evolution", icon: GitBranch, labelKey: "nav.hypothesisEvolution" },
   { view: "training-flywheel", icon: BrainCircuit, labelKey: "nav.trainingFlywheel" },
   { view: "plan", icon: Target, labelKey: "nav.plan" },
   { view: "lint", icon: ClipboardCheck, labelKey: "nav.lint" },
@@ -194,7 +200,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
   }
 
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider delay={300}>
       <div className="flex h-full w-12 flex-col items-center border-r bg-muted/50 py-2">
         {/* Logo */}
         <div className="mb-2 flex items-center justify-center">
@@ -203,27 +209,27 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           </div>
         </div>
         {/* Top: main nav items + Deep Research */}
-        <div className="flex flex-1 flex-col items-center gap-1">
+        <div className="scrollbar-narrow flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto pt-1">
           {/* Quick Review */}
           <Tooltip>
             <TooltipTrigger
               aria-label={t("nav.quickReview")}
               onClick={handleQuickReview}
-              className="relative flex h-10 w-10 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
+              className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
             >
               <PenLine className="h-5 w-5" />
             </TooltipTrigger>
             <TooltipContent side="right">{t("nav.quickReview")}</TooltipContent>
           </Tooltip>
 
-          <div className="my-1 h-px w-6 bg-border" />
+          <div className="my-1 h-px w-6 shrink-0 bg-border" />
 
           {NAV_ITEMS.map(({ view, icon: Icon, labelKey }) => (
             <Tooltip key={view}>
               <TooltipTrigger
                 aria-label={t(labelKey)}
                 onClick={() => setActiveView(view as WikiState["activeView"])}
-                className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+                className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors ${
                   activeView === view
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
@@ -247,7 +253,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
             <TooltipTrigger
               aria-label="Deep Research"
               onClick={() => toggleResearchPanel(!researchPanelOpen)}
-              className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+              className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors ${
                 researchPanelOpen
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
@@ -264,7 +270,7 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           </Tooltip>
         </div>
         {/* Bottom: daemon status + settings + switch project */}
-        <div className="flex flex-col items-center gap-1 pb-1">
+        <div className="flex shrink-0 flex-col items-center gap-1 border-t pt-1 pb-1">
           {/* Daemon status indicator */}
           <Tooltip>
             <TooltipTrigger aria-label="Clip server status" className="flex h-6 w-6 items-center justify-center">
@@ -336,10 +342,8 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
               </Button>
             ))}
           </div>
-          <DialogClose asChild>
-            <Button variant="ghost" className="mt-2 w-full">
-              取消
-            </Button>
+          <DialogClose render={<Button variant="ghost" className="mt-2 w-full" />}>
+            取消
           </DialogClose>
         </DialogContent>
       </Dialog>

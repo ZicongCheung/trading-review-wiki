@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from "react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { runPlanAudit, type PlanAuditResult } from "@/lib/plan-audit"
 import { Button } from "@/components/ui/button"
-import { Target, RefreshCw, CheckCircle2, AlertTriangle, Info, ChevronDown, ChevronRight } from "lucide-react"
+import { Target, RefreshCw, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react"
 
 export function PlanAuditView() {
   const project = useWikiStore((s) => s.project)
@@ -16,7 +16,7 @@ export function PlanAuditView() {
 
   const canRun =
     !!project &&
-    (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom")
+    (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom" || llmConfig.provider === "deepseek")
 
   const handleRunAudit = useCallback(async () => {
     if (!project || !canRun || loading) return

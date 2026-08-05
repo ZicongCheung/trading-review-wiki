@@ -116,6 +116,7 @@ import {
   runHygiene,
   runTemporalFactsAudit,
 } from "../governance/index.mjs"
+import { handleImaSync } from "../internal/ima/cli-handler.mjs"
 import {
   EMBEDDING_INDEX_RELATIVE_PATH,
   apiRunIngest,
@@ -674,6 +675,8 @@ async function handleCompanyResearch(args) {
     graphNeighbors: args["graph-neighbors"],
     graphDepth: args["graph-depth"],
     sqlLimit: args["sql-limit"],
+    apiKey: args["api-key"],
+    endpoint: args.endpoint,
     model: args.model,
     codexBin: args["codex-bin"],
     codexProfile: args["codex-profile"],
@@ -751,7 +754,10 @@ async function handleDailyLoop(args) {
   const result = await runDailyLoop({
     projectPath: args.project,
     provider: args.provider ?? "codex",
+    apiKey: args["api-key"],
+    endpoint: args.endpoint,
     model: args.model,
+    useLlmQuestionPlanner: args["no-llm-question-planner"] ? false : undefined,
     reasoningEffort: args["reasoning-effort"],
     codexBin: args["codex-bin"],
     codexProfile: args["codex-profile"],
@@ -789,6 +795,7 @@ async function handleDailyLoop(args) {
     questionPlanner: result.questionPlanner,
     report: result.reportRelativePath,
     feedback: result.feedbackRelativePath,
+    compoundPaths: result.compoundPaths ?? [],
     selfTrainingActions: result.selfTraining?.actions?.length ?? null,
   }, null, 2))
 }
@@ -2450,8 +2457,11 @@ async function handleHypothesis(args) {
       candidateLimit: args["candidate-limit"] ?? args.candidateLimit,
       perLaneHypotheses: args["per-lane-hypotheses"] ?? args.perLaneHypotheses,
       financeEntityAuditRoots: args["finance-entity-audit-roots"] ?? args.financeEntityAuditRoots,
-      provider: args.provider ?? "codex",
+      provider: args.provider ?? "openai",
       model: args.model,
+      apiKey: args["api-key"] ?? args.apiKey,
+      endpoint: args.endpoint,
+      requestAgentText: args.requestAgentText,
       timeoutMs: args["timeout-ms"] ?? args.timeoutMs,
     })
     console.log(JSON.stringify(result, null, 2))
@@ -2485,7 +2495,7 @@ async function handleHypothesis(args) {
     const askResult = await askWiki({
       query,
       projectPath: args.project,
-      provider: args.provider ?? "codex",
+      provider: args.provider ?? "openai",
       model: args.model,
       apiKey: args["api-key"],
       endpoint: args.endpoint,
@@ -2604,6 +2614,8 @@ async function handleHypothesis(args) {
       selectedSources: args["selected-sources"] ?? args.selectedSources,
       provider: args.provider ?? "codex",
       model: args.model,
+      apiKey: args["api-key"] ?? args.apiKey,
+      endpoint: args.endpoint,
       timeoutMs: args["timeout-ms"] ?? args.timeoutMs,
       imaTimeoutMs: args["ima-timeout-ms"] ?? args.imaTimeoutMs,
       imaMaxKnowledgeBases: args["ima-max-knowledge-bases"] ?? args.imaMaxKnowledgeBases,
@@ -2647,6 +2659,8 @@ async function handleHypothesis(args) {
       financeEntityAuditRoots: args["finance-entity-audit-roots"] ?? args.financeEntityAuditRoots,
       provider: args.provider ?? "codex",
       model: args.model,
+      apiKey: args["api-key"] ?? args.apiKey,
+      endpoint: args.endpoint,
       compact: Boolean(args.compact),
       write: Boolean(args.write),
     })
@@ -2879,11 +2893,10 @@ export const COMMAND_HANDLERS = Object.freeze({
   "finalize": handleFinalize,
   "hygiene": handleHygiene,
   "hypothesis": handleHypothesis,
+  "ima-sync": handleImaSync,
   "market-validate": handleMarketValidate,
   "prepare": handlePrepare,
-  "query": handleAsk,
   "research-os": handleResearchOs,
-  "researchos": handleResearchOs,
   "sag-sync": handleSagSync,
   "self-question": handleSelfQuestion,
   "self-train": handleSelfTrain,

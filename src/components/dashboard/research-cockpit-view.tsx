@@ -816,14 +816,14 @@ function buildWatchAnswer({
     }
   }
 
-  const evidenceDelta = textValue(primary.evidenceDelta, textValue(primaryEvent.evidenceDelta, "matched_context"))
-  const sourceRef = textValue(primary.sourceRef, textValue(primaryEvent.sourceRef, "未记录来源"))
-  const sourceExcerpt = compactText(primaryEvent.sourceExcerpt ?? primary.sourceExcerpt, "", 420)
-  const relatedWikiPages = arrayRecords(primary.relatedWikiPages ?? primaryEvent.relatedWikiPages).slice(0, 3)
+  const evidenceDelta = textValue(primary.evidenceDelta, textValue(primaryEvent?.evidenceDelta, "matched_context"))
+  const sourceRef = textValue(primary.sourceRef, textValue(primaryEvent?.sourceRef, "未记录来源"))
+  const sourceExcerpt = compactText(primaryEvent?.sourceExcerpt ?? primary.sourceExcerpt, "", 420)
+  const relatedWikiPages = arrayRecords(primary.relatedWikiPages ?? primaryEvent?.relatedWikiPages).slice(0, 3)
   const alertReason = textValue(primary.alertReason, "")
   const gaps = [...new Set([
     ...stringList(primary.evidenceGaps),
-    ...stringList(primaryEvent.evidenceGaps),
+    ...stringList(primaryEvent?.evidenceGaps),
   ])].slice(0, 8)
 
   let tone: WatchAnswerTone = "neutral"
@@ -957,6 +957,20 @@ function signalStrengthLabel(delta: unknown) {
   return "新催化"
 }
 
+type SignalTodo = {
+  key: string
+  item: Record<string, unknown>
+  hypothesis: Record<string, unknown> | null
+  signal: ReturnType<typeof latestSignalForHypothesis> & {
+    sourceKindLabel?: unknown
+    matchedSegments?: unknown
+    matchedEntities?: unknown
+    catalystTags?: unknown
+  }
+  sourceCount: number
+  signalCount: number
+}
+
 function buildSignalTodos({
   watchRun,
   hypothesisRows,
@@ -965,7 +979,7 @@ function buildSignalTodos({
   watchRun: WatchRun | null
   hypothesisRows: Array<Record<string, unknown>>
   ignoredKeys: Set<string>
-}) {
+}): SignalTodo[] {
   const byId = new Map(hypothesisRows.map((item) => [textValue(item.id, ""), item]))
   const records = [
     ...arrayRecords(watchRun?.alerts),
@@ -989,18 +1003,11 @@ function buildSignalTodos({
       })
     }
   }
-  const todos: Array<{
-    key: string
-    item: Record<string, unknown>
-    hypothesis: Record<string, unknown> | null
-    signal: ReturnType<typeof latestSignalForHypothesis>
-    sourceCount: number
-    signalCount: number
-  }> = []
+  const todos: SignalTodo[] = []
   for (const [key, cluster] of byKey.entries()) {
     const item = cluster.item
     const hypothesis = byId.get(textValue(item.hypothesisId, "")) ?? null
-    const signalCount = Math.max(cluster.sourceKeys.size, numberValue(item.mergedCount, 1))
+    const signalCount = Math.max(cluster.sourceKeys.size, numberValue(item.mergedCount))
     todos.push({
       key,
       item,
@@ -1015,12 +1022,12 @@ function buildSignalTodos({
     || a.key.localeCompare(b.key))
 }
 
-function todoCanConfirm(todo: ReturnType<typeof buildSignalTodos>[number]) {
+function todoCanConfirm(todo: SignalTodo) {
   const status = textValue(todo.hypothesis?.status, "watching")
   return Boolean(todo.hypothesis) && todo.signal.suggestedStatus !== status
 }
 
-function todoActionScore(todo: ReturnType<typeof buildSignalTodos>[number]) {
+function todoActionScore(todo: SignalTodo) {
   return pendingTodoPriorityScore({
     canConfirm: todoCanConfirm(todo),
     askDeepDiveRecommended: todo.signal.askDeepDiveRecommended,
@@ -1223,7 +1230,7 @@ export function ResearchCockpitView() {
   const [hypothesisTitle, setHypothesisTitle] = useState("")
   const [hypothesisTheme, setHypothesisTheme] = useState("AI数据中心互联")
   const [hypothesisSegments, setHypothesisSegments] = useState("")
-  const [hypothesisTimeHorizon, setHypothesisTimeHorizon] = useState("未来6-12个月")
+  const [hypothesisTimeHorizon] = useState("未来6-12个月")
   const [selectedHypothesisId, setSelectedHypothesisId] = useState("")
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [supplementTitle, setSupplementTitle] = useState("补充资料：")
@@ -1263,7 +1270,7 @@ export function ResearchCockpitView() {
   const [processRun, setProcessRun] = useState<ProcessRun | null>(null)
   const [rawChatImportRun, setRawChatImportRun] = useState<RawChatImportRun | null>(null)
   const [wechatSourcesRun, setWechatSourcesRun] = useState<WechatSourcesRun | null>(null)
-  const [createHypothesisRun, setCreateHypothesisRun] = useState<CreateHypothesisRun | null>(null)
+  const [, setCreateHypothesisRun] = useState<CreateHypothesisRun | null>(null)
   const [supplementRun, setSupplementRun] = useState<SupplementRun | null>(null)
   const [supplementDraftRun, setSupplementDraftRun] = useState<SupplementDraftRun | null>(null)
   const [inboxStatus, setInboxStatus] = useState<InboxStatus | null>(null)
@@ -1661,6 +1668,7 @@ export function ResearchCockpitView() {
   const reviewModeSummary = useMemo(() => buildReviewModeSummary({
     llmReviewStatus: watchRun?.summary?.llmReviewStatus ?? watchRun?.llmReview?.status,
     llmReviewReason: watchRun?.llmReview?.reason,
+    llmReviewError: watchRun?.llmReview?.error,
     autoRefresh,
     running,
     runningKind: reviewRunningKind,
@@ -1922,7 +1930,7 @@ export function ResearchCockpitView() {
   ) => {
     if (!projectPath) return null
     try {
-      const runs = await Promise.all(sources.map((source) => (
+      const results = await Promise.allSettled(sources.map((source) => (
         runResearchCockpitCommand<WechatSourcesRun>(projectPath, "wechat-source-list", [
           "--source",
           source,
@@ -1930,11 +1938,18 @@ export function ResearchCockpitView() {
           "20",
         ])
       )))
-      const result = mergeSignalSourceListRuns(runs, { preferredSource }) as WechatSourcesRun
+      const successfulRuns = results
+        .filter((r): r is PromiseFulfilledResult<WechatSourcesRun> => r.status === "fulfilled")
+        .map((r) => r.value)
+      const firstRejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected")
+      const result = mergeSignalSourceListRuns(successfulRuns, { preferredSource }) as WechatSourcesRun
       setWechatSourcesRun(result)
       const defaultRef = textValue(result.defaultSourceRef, "")
       if (applyDefault && defaultRef) {
         setRawChatSource(defaultRef)
+      }
+      if (firstRejected && successfulRuns.length === 0) {
+        throw firstRejected.reason instanceof Error ? firstRejected.reason : new Error(String(firstRejected.reason))
       }
       return result
     } catch (err) {
@@ -2050,6 +2065,7 @@ export function ResearchCockpitView() {
     setSignalActionFeedbackByKey({})
     setActivityLog([])
     try {
+      const llmConfig = useWikiStore.getState().llmConfig
       const result = await runStep<DiscoverRun>(
         "hypothesis",
         "AI 并发发现假设",
@@ -2067,6 +2083,14 @@ export function ResearchCockpitView() {
           "3650d",
           "--timeout-ms",
           "300000",
+          "--provider",
+          llmConfig.provider === "codex" ? "codex" : "openai",
+          "--api-key",
+          llmConfig.apiKey ?? "",
+          "--endpoint",
+          llmConfig.customEndpoint ?? "",
+          "--model",
+          llmConfig.model ?? "",
         ],
         setDiscoverRun,
         (run) => `${run.summary?.questionsDesigned ?? 0} 个问题，${run.summary?.candidatesReturned ?? 0} 条候选`,
@@ -2265,7 +2289,7 @@ export function ResearchCockpitView() {
     if (result?.hypothesis) {
       setCandidateAskPrecheckAdopted(result.hypothesis)
       setCandidateAskPrecheckSource(null)
-      appendLog("预检已采纳", "done", textValue(result.hypothesis.title, result.hypothesis.id))
+      appendLog("预检已采纳", "done", textValue(result.hypothesis.title, result.hypothesis.id as string))
     }
   }, [appendLog, candidateAskPrecheckSource, trackCandidateHypothesis])
 
@@ -2562,6 +2586,7 @@ export function ResearchCockpitView() {
 
   const buildWatchArgs = useCallback((limit = "100", llmReviewMode = "auto", hypothesisIdOverride?: string) => {
     const hypothesisId = hypothesisIdOverride ?? selectedHypothesisId
+    const llmConfig = useWikiStore.getState().llmConfig
     const args = [
       "--since",
       since,
@@ -2576,6 +2601,14 @@ export function ResearchCockpitView() {
       "--llm-review-timeout-ms",
       "120000",
       "--compact",
+      "--provider",
+      llmConfig.provider === "codex" ? "codex" : "openai",
+      "--api-key",
+      llmConfig.apiKey ?? "",
+      "--endpoint",
+      llmConfig.customEndpoint ?? "",
+      "--model",
+      llmConfig.model ?? "",
     ]
     if (hypothesisId) {
       args.push("--hypothesis-id", hypothesisId)
@@ -2593,13 +2626,20 @@ export function ResearchCockpitView() {
     setRunning(true)
     setError(null)
     try {
+      const llmConfig = useWikiStore.getState().llmConfig
       const args = [
         "--body",
         supplementBody.trim(),
         "--selected-sources",
         selectedSupplementSources.join(","),
         "--provider",
-        "codex",
+        llmConfig.provider === "codex" ? "codex" : "openai",
+        "--api-key",
+        llmConfig.apiKey ?? "",
+        "--endpoint",
+        llmConfig.customEndpoint ?? "",
+        "--model",
+        llmConfig.model ?? "",
         "--timeout-ms",
         "120000",
         "--ima-timeout-ms",
@@ -2742,6 +2782,7 @@ export function ResearchCockpitView() {
       }
 
       const watchAction = writeAlerts ? "watch-write" : "watch-dry-run"
+      const llmConfig = useWikiStore.getState().llmConfig
       const buildLocalWatchArgs = (mode: "off" | "auto" | "force") => {
         const args = [
           "--since",
@@ -2757,6 +2798,14 @@ export function ResearchCockpitView() {
           "--llm-review-timeout-ms",
           "120000",
           "--compact",
+          "--provider",
+          llmConfig.provider === "codex" ? "codex" : "openai",
+          "--api-key",
+          llmConfig.apiKey ?? "",
+          "--endpoint",
+          llmConfig.customEndpoint ?? "",
+          "--model",
+          llmConfig.model ?? "",
         ]
         if (scopedHypothesisId) args.push("--hypothesis-id", scopedHypothesisId)
         return args
@@ -3227,16 +3276,17 @@ export function ResearchCockpitView() {
 
   return (
     <div className="space-y-5">
+      {/* 假设管理已迁移到「假设演化台」（左侧导航 GitBranch 图标） */}
+      <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        <span>假设管理（发现/验证/状态/候选/微信导入/政策提议/观测草稿/样本导出/数据源探测）已迁移到「假设演化台」，请在左侧导航点击 GitBranch 图标进入。本面板保留信号扫描、补证、自训练等非假设功能。</span>
+      </div>
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-xl font-semibold">今日投研工作台</h2>
           <p className="mt-1 text-sm text-muted-foreground">今天有什么新信号，会不会改变正在跟踪的假设</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={discoverHypothesesFromWiki} disabled={running}>
-            {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            AI 并发发现假设
-          </Button>
           <Button size="sm" onClick={() => refresh(false, "auto")} disabled={running}>
             {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SearchCheck className="h-3.5 w-3.5" />}
             {scanModeSummary.buttonLabel}
@@ -3609,7 +3659,7 @@ export function ResearchCockpitView() {
             running={running}
             canConfirm={selectedTimelineCanConfirm}
             onAsk={() => {
-              void askHypothesisWithFeedback(selectedHypothesis, selectedSignal, "selected-hypothesis")
+              void askHypothesisWithFeedback(selectedHypothesis, selectedSignal ?? undefined, "selected-hypothesis")
             }}
             onConfirm={confirmSelectedStatus}
             onScan={() => refresh(false, "auto")}
@@ -8734,55 +8784,6 @@ function AskDecisionCard({
   )
 }
 
-function AskEvidenceStrengthCard({
-  strength,
-}: {
-  strength: ReturnType<typeof buildAskEvidenceStrength>
-}) {
-  const toneClass: Record<ReturnType<typeof buildAskEvidenceStrength>["tone"], string> = {
-    ready: "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-100",
-    verify: "border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100",
-    weak: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100",
-  }
-  const badgeClass: Record<ReturnType<typeof buildAskEvidenceStrength>["badges"][number]["tone"], string> = {
-    source: "bg-background/70 text-foreground",
-    stock: "bg-primary/10 text-primary",
-    gap: "bg-amber-500/10 text-amber-800 dark:text-amber-200",
-    ready: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200",
-  }
-  return (
-    <div className={cn("mb-3 rounded-md border p-3", toneClass[strength.tone])}>
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex items-center gap-1.5 rounded-md bg-background/70 px-2 py-1 text-xs font-medium">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              来源强度
-            </span>
-            {strength.badges.map((badge) => (
-              <span key={badge.label} className={cn("rounded-md px-2 py-1 text-xs font-medium", badgeClass[badge.tone])}>
-                {badge.label}
-              </span>
-            ))}
-          </div>
-          <div className="mt-2 text-sm font-semibold leading-6">{strength.headline}</div>
-          <div className="mt-1 line-clamp-2 text-xs leading-5 opacity-80">{strength.detail}</div>
-        </div>
-        <div className="grid shrink-0 gap-2 text-xs sm:grid-cols-2 xl:w-[520px]">
-          <div className="rounded-md bg-background/70 p-2">
-            <div className="font-medium text-muted-foreground">排序状态</div>
-            <div className="mt-1 line-clamp-2 leading-5">{strength.rankingState}</div>
-          </div>
-          <div className="rounded-md bg-background/70 p-2">
-            <div className="font-medium text-muted-foreground">下一步</div>
-            <div className="mt-1 line-clamp-2 leading-5">{strength.nextAction}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function SmallStat({ label, value, tone = "default" }: { label: string; value: ReactNode; tone?: "default" | "warn" }) {
   const warn = tone === "warn" && typeof value === "number" && value > 0
   return (
@@ -8917,9 +8918,9 @@ function HypothesisStateRow({ item, selected, onSelect }: { item: Record<string,
         <SmallStat label="events" value={item.latestEventAt ? 1 : 0} />
       </div>
       <div className="mt-2 text-xs text-muted-foreground">{textValue(item.feedbackReason, "等待新证据")}</div>
-      {item.latestEvidenceDelta && (
+      {(item.latestEvidenceDelta && (
         <div className="mt-2 text-xs text-amber-600">{textValue(item.latestEvidenceDelta)}</div>
-      )}
+      )) as ReactNode}
     </button>
   )
 }

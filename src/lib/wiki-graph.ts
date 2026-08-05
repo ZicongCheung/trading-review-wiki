@@ -214,7 +214,7 @@ export async function buildWikiGraph(
     linkCounts.set(id, 0)
   }
 
-  const rawEdges: GraphEdge[] = []
+  const rawEdges: { source: string; target: string }[] = []
 
   for (const [sourceId, nodeData] of nodeMap) {
     for (const targetRaw of nodeData.links) {

@@ -9,7 +9,7 @@ import { copyFile, listDirectory, readFile, readFileBinary, writeFile, deleteFil
 import type { FileNode } from "@/types/wiki"
 import { startIngest } from "@/lib/ingest"
 import { enqueueIngest, enqueueBatch } from "@/lib/ingest-queue"
-import { parseTradeCSV, parseTradeRecords, parseTradeExcel, groupRecordsByDate, buildTradeMarkdown, buildTradeSummaryForReview, calculateFifoPnL, generateImportPreview, parseTradeRecordsWithMapping, detectEncoding } from "@/lib/trade-import"
+import { parseTradeRecords, parseTradeExcel, groupRecordsByDate, buildTradeMarkdown, buildTradeSummaryForReview, calculateFifoPnL, generateImportPreview, parseTradeRecordsWithMapping, detectEncoding } from "@/lib/trade-import"
 import type { ImportPreview, ColumnType } from "@/lib/trade-import"
 import { TradeImportPreview } from "./trade-import-preview"
 import Papa from "papaparse"
@@ -123,7 +123,7 @@ export function SourcesView() {
     await loadSources()
 
     // Enqueue for serial ingest (runs in background via ingest queue)
-    if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom") {
+    if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom" || llmConfig.provider === "deepseek") {
       for (const destPath of importedPaths) {
         enqueueIngest(pp, destPath).catch((err) =>
           console.error(`Failed to enqueue ingest:`, err)
@@ -165,7 +165,7 @@ export function SourcesView() {
       await loadSources()
 
       // Build ingest tasks with folder context
-      if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom") {
+      if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom" || llmConfig.provider === "deepseek") {
         const tasks = copiedFiles
           .filter((fp) => {
             const ext = fp.split(".").pop()?.toLowerCase() ?? ""
@@ -213,7 +213,7 @@ export function SourcesView() {
     const pp = normalizePath(project.path)
     const paths = Array.isArray(selected) ? selected : [selected]
 
-    const results: { path: string; status: "ok" | "empty" | "error" | "preview"; msg?: string; dates?: string[] }[] = []
+    const results: { path: string; status: "ok" | "empty" | "error"; msg?: string; dates?: string[] }[] = []
 
     try {
       // 预读取历史交割单记录（用于 FIFO 盈亏计算）
@@ -259,7 +259,7 @@ export function SourcesView() {
           if (ext === "csv" || ext === "txt") {
             // Read as binary to detect encoding (GBK vs UTF-8)
             const buffer = await readFileBinary(sourcePath)
-            const text = new TextDecoder(detectEncoding(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))).decode(buffer)
+            const text = new TextDecoder(detectEncoding(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)).decode(buffer)
             const parsed = Papa.parse<unknown[]>(text, { skipEmptyLines: true })
             rawRows = parsed.data
             // Try normal parse first
@@ -277,7 +277,7 @@ export function SourcesView() {
               const msg = backendErr instanceof Error ? backendErr.message : String(backendErr || "")
               if (msg.includes("Invalid OLE") || msg.includes("not an office document") || msg.includes("CFB")) {
                 const buffer = await readFileBinary(sourcePath)
-                records = parseTradeExcel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
+                records = parseTradeExcel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)
                 usedFallback = true
               } else {
                 throw backendErr
@@ -484,10 +484,6 @@ export function SourcesView() {
     try {
       // Step 1: Find related wiki pages before deleting
       const relatedPages = await findRelatedWikiPages(pp, fileName)
-      const deletedSlugs = relatedPages.map((p) => {
-        const name = getFileName(p).replace(".md", "")
-        return name
-      }).filter(Boolean)
 
       // Step 2: Delete the source file
       await deleteFile(node.path)

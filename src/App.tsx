@@ -6,7 +6,8 @@ import { useReviewStore } from "@/stores/review-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useResearchStore } from "@/stores/research-store"
 import { listDirectory, openProject, getClipServerToken } from "@/commands/fs"
-import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadAppTheme, loadPgConfig } from "@/lib/project-store"
+import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadAppTheme, loadPgConfig, loadImaSyncConfig } from "@/lib/project-store"
+import { runImaConsistencyCheck } from "@/lib/ima-consistency"
 import { syncStockCodes } from "@/commands/stock-codes"
 import { loadReviewItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave, teardownAutoSave } from "@/lib/auto-save"
@@ -127,6 +128,36 @@ function App() {
         console.warn("[App] Stock code sync failed:", err)
       )
     }
+    // 研报同步：启动时自动拉最新文件夹并比对（侧栏 无需更新/待更新/点击进行配置）
+    loadImaSyncConfig()
+      .then((cfg) => {
+        // 迁移旧「全部/最新」伪值；空 outDir 用默认下载路径，便于启动自动解析最新夹
+        let normalized = cfg
+          ? { ...cfg }
+          : {
+              enabled: true,
+              harPath: "",
+              outDir: "/raw/sources/研报",
+              folder: "",
+              kbId: "",
+            }
+        const f = (normalized.folder || "").trim()
+        if (f === "全部" || f === "最新" || f === "all" || f === "latest") {
+          normalized = { ...normalized, folder: "" }
+        }
+        if (!(normalized.outDir || "").trim()) {
+          normalized = { ...normalized, outDir: "/raw/sources/研报" }
+        }
+        useWikiStore.getState().setImaSyncConfig(normalized)
+        return runImaConsistencyCheck({
+          projectPath: proj.path,
+          config: normalized,
+          force: true,
+          // 始终解析知识库「最新」文件夹并写回配置，再做单夹一致性检查
+          resolveLatest: true,
+        })
+      })
+      .catch((err) => console.warn("[App] IMA consistency check failed:", err))
     // Notify local clip server of the current project + all recent projects
     getClipServerToken().then((token) => {
       fetch("http://127.0.0.1:19827/project", {

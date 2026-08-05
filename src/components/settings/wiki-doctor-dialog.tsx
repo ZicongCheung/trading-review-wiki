@@ -354,7 +354,6 @@ export function WikiDoctorDialog({ open, onOpenChange }: WikiDoctorDialogProps) 
                       <span className="text-xs text-muted-foreground">{pf.basename}</span>
                       <span className="text-xs">→</span>
                       <Input
-                        size="sm"
                         className="h-7 text-xs"
                         value={pinyinRenames[pf.path] ?? pf.basename}
                         onChange={(e) =>

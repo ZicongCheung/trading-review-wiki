@@ -37,8 +37,9 @@ arrow-array = "57"
 arrow-schema = "57"
 futures = "0.3"
 rand = "0.8"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "deflate"] }
 tokio-postgres = "0.7"
+regex = "1"
 walkdir = "2"
 
 [profile.release]
@@ -47,3 +48,11 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Dev profile: shrink debug artifacts. `debug = "line-tables-only"` drops
+# type-level debuginfo so the giant .lib / .pdb files (which dominate
+# target/ at ~15 GB) shrink to a fraction of their size. You keep line-number
+# stack traces (panic messages stay readable); only variable inspection in a
+# debugger is lost. Set `debug = true` to restore full symbols.
+[profile.dev]
+debug = "line-tables-only"

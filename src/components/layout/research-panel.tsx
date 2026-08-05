@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex"
 import "katex/dist/katex.min.css"
 import {
   Search, Loader2, CheckCircle2, AlertCircle, ChevronRight, ChevronDown, X,
-  ExternalLink, FileText, Send,
+  FileText, Send,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useResearchStore, type ResearchTask } from "@/stores/research-store"
@@ -266,7 +266,7 @@ function ResearchTaskCard({ task, onRemove }: { task: ResearchTask; onRemove: (i
     const topic = task.topic
     const queries = task.searchQueries
     onRemove(task.id)
-    const taskId = queueResearch(normalizePath(project.path), topic, llmConfig, searchApiConfig, queries)
+    queueResearch(normalizePath(project.path), topic, llmConfig, searchApiConfig, queries)
     // Ensure panel stays open
     useResearchStore.getState().setPanelOpen(true)
   }

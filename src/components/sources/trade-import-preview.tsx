@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react"
+import { useState, useEffect } from "react"
 import {
   Dialog,
   DialogContent,
@@ -9,8 +9,8 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { AlertTriangle, CheckCircle, HelpCircle } from "lucide-react"
-import type { ImportPreview, ColumnType, ColumnGuess } from "@/lib/trade-import"
+import { AlertTriangle, CheckCircle } from "lucide-react"
+import type { ImportPreview, ColumnType } from "@/lib/trade-import"
 
 const TYPE_LABELS: Record<ColumnType, string> = {
   date: "日期",

@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest"
 import {
   extractAssistantTextFromResponse,
   shouldUseNativeHttpForLlm,
+  streamChat,
   waitForNativeHttpResponse,
 } from "@/lib/llm-client"
+import type { LlmConfig } from "@/stores/wiki-store"
 
 describe("llm-client native transport selection", () => {
   it("prefers fetch streaming for all providers by default", () => {
@@ -91,5 +93,69 @@ describe("llm-client native transport timeout and abort", () => {
     controller.abort()
 
     await assertion
+  })
+})
+
+describe("streamChat token + prefix-cache usage capture (DeepSeek)", () => {
+  const deepseekConfig: LlmConfig = {
+    provider: "custom",
+    apiKey: "k",
+    model: "deepseek-v4-flash",
+    ollamaUrl: "http://localhost:11434",
+    customEndpoint: "https://api.deepseek.com/v1",
+    maxContextSize: 204800,
+  }
+
+  it("captures usage (incl. cache hits) from the final SSE chunk and passes it to onDone", async () => {
+    const sse =
+      `data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n` +
+      `data: {"choices":[{"delta":{"content":" world"}}]}\n\n` +
+      `data: {"usage":{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1000}}}\n\n` +
+      `data: [DONE]\n\n`
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(sse))
+        controller.close()
+      },
+    })
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: stream,
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    try {
+      const tokens: string[] = []
+      let doneUsage: unknown = undefined
+      await streamChat(
+        deepseekConfig,
+        [
+          { role: "system", content: "stable prefix" },
+          { role: "user", content: "hi" },
+        ],
+        {
+          onToken: (t) => tokens.push(t),
+          onDone: (usage) => {
+            doneUsage = usage
+          },
+          onError: (e) => {
+            throw e
+          },
+        },
+      )
+
+      expect(tokens.join("")).toBe("Hello world")
+      expect(doneUsage).toBeDefined()
+      expect((doneUsage as any).promptTokens).toBe(1200)
+      expect((doneUsage as any).completionTokens).toBe(300)
+      expect((doneUsage as any).totalTokens).toBe(1500)
+      expect((doneUsage as any).cacheHitTokens).toBe(1000)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

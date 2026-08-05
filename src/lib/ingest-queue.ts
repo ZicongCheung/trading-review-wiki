@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "@/commands/fs"
-import { autoIngest } from "./ingest"
+import { autoIngest } from "@/lib/ingest"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useChatStore } from "@/stores/chat-store"
 import { normalizePath } from "@/lib/path-utils"
@@ -23,6 +23,7 @@ export interface IngestTask {
 let queue: IngestTask[] = []
 let processing = false
 let currentProjectPath = ""
+let paused = false
 
 // Current task context — bundled together to avoid cross-task contamination
 interface TaskContext {
@@ -42,18 +43,32 @@ async function saveQueue(projectPath: string): Promise<void> {
   try {
     // Only save pending and failed tasks (done tasks are removed)
     const toSave = queue.filter((t) => t.status !== "done")
-    await writeFile(queueFilePath(projectPath), JSON.stringify(toSave, null, 2))
+    await writeFile(
+      queueFilePath(projectPath),
+      JSON.stringify({ paused, tasks: toSave }, null, 2),
+    )
   } catch {
     // non-critical
   }
 }
 
-async function loadQueue(projectPath: string): Promise<IngestTask[]> {
+async function loadQueue(projectPath: string): Promise<{ paused: boolean; tasks: IngestTask[] }> {
   try {
     const raw = await readFile(queueFilePath(projectPath))
-    return JSON.parse(raw) as IngestTask[]
+    const parsed = JSON.parse(raw) as unknown
+    // Backwards compatible: old format was a plain array of tasks
+    if (Array.isArray(parsed)) {
+      return { paused: false, tasks: parsed as IngestTask[] }
+    }
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { tasks?: unknown }).tasks)) {
+      return {
+        paused: !!(parsed as { paused?: unknown }).paused,
+        tasks: (parsed as { tasks: IngestTask[] }).tasks,
+      }
+    }
+    return { paused: false, tasks: [] }
   } catch {
-    return []
+    return { paused: false, tasks: [] }
   }
 }
 
@@ -204,6 +219,27 @@ export function getQueueSummary(): { pending: number; processing: number; failed
   }
 }
 
+/**
+ * Pause the ingest queue. The currently running task is allowed to finish, but
+ * no new task is picked up until resumeQueue() is called. (Session-only — not
+ * persisted; a cold restart resumes automatically.)
+ */
+export function pauseQueue(): void {
+  paused = true
+}
+
+/** Whether the queue is currently paused. */
+export function isPaused(): boolean {
+  return paused
+}
+
+/** Resume a paused queue and (re)start processing. */
+export function resumeQueue(projectPath?: string): void {
+  paused = false
+  const pp = normalizePath(projectPath ?? currentProjectPath)
+  if (pp) processNext(pp)
+}
+
 // ── Restore on startup ───────────────────────────────────────────────────
 
 /**
@@ -215,26 +251,34 @@ export async function restoreQueue(projectPath: string): Promise<void> {
   currentProjectPath = pp
   const saved = await loadQueue(pp)
 
-  if (saved.length === 0) return
+  if (saved.tasks.length === 0) {
+    paused = saved.paused
+    return
+  }
+
+  // Restore persisted pause state; otherwise leave session default (false)
+  paused = saved.paused
 
   // Reset any "processing" tasks back to "pending" (interrupted by app close)
   let restored = 0
-  for (const task of saved) {
+  for (const task of saved.tasks) {
     if (task.status === "processing") {
       task.status = "pending"
       restored++
     }
   }
 
-  queue = saved
+  queue = saved.tasks
   await saveQueue(pp)
 
   const pending = queue.filter((t) => t.status === "pending").length
   const failed = queue.filter((t) => t.status === "failed").length
 
-  if (pending > 0 || restored > 0) {
+  if ((pending > 0 || restored > 0) && !paused) {
     console.log(`[Ingest Queue] Restored: ${pending} pending, ${failed} failed, ${restored} resumed from interrupted`)
     processNext(pp)
+  } else if (pending > 0 || restored > 0) {
+    console.log(`[Ingest Queue] Restored: ${pending} pending, ${failed} failed, ${restored} resumed — paused, not starting`)
   }
 }
 
@@ -244,6 +288,7 @@ const MAX_RETRIES = 3
 
 async function processNext(projectPath: string): Promise<void> {
   if (processing) return
+  if (paused) return
 
   const next = queue.find((t) => t.status === "pending")
   if (!next) return
@@ -256,7 +301,7 @@ async function processNext(projectPath: string): Promise<void> {
   const llmConfig = useWikiStore.getState().llmConfig
 
   // Check if LLM is configured
-  if (!llmConfig.apiKey && llmConfig.provider !== "ollama" && llmConfig.provider !== "custom") {
+  if (!llmConfig.apiKey && llmConfig.provider !== "ollama" && llmConfig.provider !== "custom" && llmConfig.provider !== "deepseek") {
     next.status = "failed"
     next.error = "LLM not configured — set API key in Settings"
     processing = false

@@ -50,6 +50,8 @@ pub fn run() {
             commands::stock_codes::sync_stock_codes,
             commands::stock_codes::lookup_stock_code,
             commands::stock_codes::get_stock_codes_status,
+            commands::stock_codes::update_stock_codes,
+            commands::stock_codes::get_stock_sync_status,
             commands::migrate::migrate_wiki_backup,
             commands::normalize_dirs::normalize_wiki_dirs,
             commands::body_residue::body_residue_backup,

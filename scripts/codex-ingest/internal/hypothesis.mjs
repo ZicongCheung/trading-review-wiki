@@ -6106,6 +6106,32 @@ async function runWatchLlmReview({ projectPath, generatedAt, events, candidateHy
       reviews,
     }
   } catch (err) {
+    const errorMessage = safeErrorMessage(err instanceof Error ? err.message : String(err))
+    try {
+      const llmReviewErrorDir = path.join(projectPath, ".llm-wiki")
+      await fs.mkdir(llmReviewErrorDir, { recursive: true })
+      await fs.writeFile(
+        path.join(llmReviewErrorDir, "llm-review-error.json"),
+        JSON.stringify(
+          {
+            generatedAt,
+            provider,
+            model: model ?? null,
+            endpoint: options.endpoint ?? null,
+            apiKeyPrefix: options.apiKey ? String(options.apiKey).slice(0, 4) : null,
+            candidateCount: items.length,
+            maxItems,
+            error: errorMessage,
+            stack: err instanceof Error ? err.stack : null,
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      )
+    } catch {
+      // ignore logging errors
+    }
     return {
       status: "failed",
       mode,
@@ -6115,7 +6141,7 @@ async function runWatchLlmReview({ projectPath, generatedAt, events, candidateHy
       candidateCount: items.length,
       maxItems,
       reviews: [],
-      error: safeErrorMessage(err instanceof Error ? err.message : String(err)),
+      error: errorMessage,
     }
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})

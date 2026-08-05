@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import {
   FileText, Users, Lightbulb, BookOpen, HelpCircle, GitMerge, BarChart3, ChevronRight, ChevronDown, Layout, Globe,
+  GitBranch, AlertTriangle, Target, TrendingUp, Activity,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -17,16 +18,43 @@ interface WikiPageInfo {
 }
 
 const TYPE_CONFIG: Record<string, { icon: typeof FileText; label: string; color: string; order: number }> = {
-  overview:    { icon: Layout,      label: "Overview",     color: "text-yellow-500", order: 0 },
-  entity:      { icon: Users,       label: "Entities",     color: "text-blue-500",   order: 1 },
-  concept:     { icon: Lightbulb,   label: "Concepts",     color: "text-purple-500", order: 2 },
-  source:      { icon: BookOpen,    label: "Sources",      color: "text-orange-500", order: 3 },
-  synthesis:   { icon: GitMerge,    label: "Synthesis",    color: "text-red-500",    order: 4 },
-  comparison:  { icon: BarChart3,   label: "Comparisons",  color: "text-emerald-500",order: 5 },
-  query:       { icon: HelpCircle,  label: "Queries",      color: "text-green-500",  order: 6 },
+  overview:    { icon: Layout,        label: "总览",     color: "text-yellow-500", order: 0 },
+  entity:      { icon: Users,         label: "标的",     color: "text-blue-500",   order: 1 },
+  concept:     { icon: Lightbulb,     label: "概念",     color: "text-purple-500", order: 2 },
+  source:      { icon: BookOpen,      label: "来源",     color: "text-orange-500", order: 3 },
+  synthesis:   { icon: GitMerge,      label: "总结",     color: "text-red-500",    order: 4 },
+  comparison:  { icon: BarChart3,     label: "对比",     color: "text-emerald-500",order: 5 },
+  query:       { icon: HelpCircle,    label: "查询",     color: "text-green-500",  order: 6 },
+  pattern:     { icon: GitBranch,     label: "模式",     color: "text-pink-500",   order: 7 },
+  mistake:     { icon: AlertTriangle, label: "错误",     color: "text-rose-500",   order: 8 },
+  strategy:    { icon: Target,        label: "策略",     color: "text-cyan-500",   order: 9 },
+  evolution:   { icon: TrendingUp,    label: "进化",     color: "text-indigo-500", order: 10 },
+  market:      { icon: Activity,      label: "市场",     color: "text-teal-500",   order: 11 },
 }
 
-const DEFAULT_CONFIG = { icon: FileText, label: "Other", color: "text-muted-foreground", order: 99 }
+const DEFAULT_CONFIG = { icon: FileText, label: "其他", color: "text-muted-foreground", order: 99 }
+
+/**
+ * Maps Chinese / legacy type names written by the ingest pipeline to the
+ * canonical English types used by TYPE_CONFIG. This keeps the Knowledge Tree
+ * grouping consistent regardless of whether frontmatter uses `type: source`,
+ * `type: 源文档`, or `type: 资料摘要`.
+ */
+const TYPE_NORMALIZATION: Record<string, string> = {
+  // Source-like variants
+  "源文档": "source",
+  "sources": "source",
+  "资料摘要": "source",
+  // Chinese knowledge entities
+  "股票": "entity",
+  "概念": "concept",
+  "总结": "synthesis",
+  "模式": "pattern",
+  "错误": "mistake",
+  "策略": "strategy",
+  "进化": "evolution",
+  "市场环境": "market",
+}
 
 export function KnowledgeTree() {
   const project = useWikiStore((s) => s.project)
@@ -34,7 +62,7 @@ export function KnowledgeTree() {
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
   const fileTree = useWikiStore((s) => s.fileTree)
   const [pages, setPages] = useState<WikiPageInfo[]>([])
-  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set(["overview", "entity", "concept", "source"]))
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set())
 
   const loadPages = useCallback(async () => {
     if (!project) return
@@ -45,8 +73,10 @@ export function KnowledgeTree() {
 
       const pageInfos: WikiPageInfo[] = []
       for (const file of mdFiles) {
-        // Skip index.md and log.md
-        if (file.name === "index.md" || file.name === "log.md") continue
+        // Skip index.md, log.md and anything inside the logs/ directory
+        // (those are daily operation logs, not knowledge pages).
+        const normPath = file.path.replace(/\\/g, "/")
+        if (file.name === "index.md" || file.name === "log.md" || normPath.includes("/logs/")) continue
         try {
           const content = await readFile(file.path)
           const info = parsePageInfo(file.path, file.name, content)
@@ -75,7 +105,7 @@ export function KnowledgeTree() {
   if (!project) {
     return (
       <div className="flex h-full items-center justify-center p-4 text-sm text-muted-foreground">
-        No project open
+        未打开项目
       </div>
     )
   }
@@ -113,7 +143,7 @@ export function KnowledgeTree() {
 
         {sortedGroups.length === 0 && (
           <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-            No wiki pages yet. Import sources to get started.
+            暂无 Wiki 页面，请先导入来源资料。
           </div>
         )}
 
@@ -200,7 +230,7 @@ function RawSourcesSection() {
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
         <BookOpen className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-        <span className="flex-1 text-left font-medium text-muted-foreground">Raw Sources</span>
+        <span className="flex-1 text-left font-medium text-muted-foreground">原始来源</span>
         <span className="text-xs text-muted-foreground">{sources.length}</span>
       </button>
       {expanded && (
@@ -258,16 +288,29 @@ function parsePageInfo(path: string, fileName: string, content: string): WikiPag
     if (headingMatch) title = headingMatch[1].trim()
   }
 
-  // Fallback: infer type from path
+  // Normalize path separators so the directory fallback works on Windows
+  // (where listDirectory returns backslash-separated paths) as well as POSIX.
+  const normalizedPath = path.replace(/\\/g, "/")
+
+  // Fallback: infer type from path (covers both English and Chinese dirs)
   if (type === "other") {
-    if (path.includes("/entities/")) type = "entity"
-    else if (path.includes("/concepts/")) type = "concept"
-    else if (path.includes("/sources/")) type = "source"
-    else if (path.includes("/queries/")) type = "query"
-    else if (path.includes("/comparisons/")) type = "comparison"
-    else if (path.includes("/synthesis/")) type = "synthesis"
+    if (normalizedPath.includes("/entities/")) type = "entity"
+    else if (normalizedPath.includes("/concepts/") || normalizedPath.includes("/概念/")) type = "concept"
+    else if (normalizedPath.includes("/sources/") || normalizedPath.includes("/源文档/")) type = "source"
+    else if (normalizedPath.includes("/queries/")) type = "query"
+    else if (normalizedPath.includes("/comparisons/")) type = "comparison"
+    else if (normalizedPath.includes("/synthesis/") || normalizedPath.includes("/总结/")) type = "synthesis"
+    else if (normalizedPath.includes("/股票/")) type = "entity"
+    else if (normalizedPath.includes("/模式/")) type = "pattern"
+    else if (normalizedPath.includes("/错误/")) type = "mistake"
+    else if (normalizedPath.includes("/策略/")) type = "strategy"
+    else if (normalizedPath.includes("/进化/")) type = "evolution"
+    else if (normalizedPath.includes("/市场环境/")) type = "market"
     else if (fileName === "overview.md") type = "overview"
   }
+
+  // Normalize Chinese / legacy types to canonical English types for display.
+  type = TYPE_NORMALIZATION[type] ?? type
 
   return { path, title, type, tags, origin }
 }

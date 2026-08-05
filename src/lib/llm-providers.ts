@@ -5,11 +5,42 @@ export interface ChatMessage {
   content: string
 }
 
+/**
+ * Token accounting for a single LLM request.
+ * `cacheHitTokens` is the provider-prefix-cache hit count (DeepSeek:
+ * `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens`) — the key
+ * signal for whether our stable system-prefix is actually saving input tokens.
+ */
+export interface TokenUsage {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  cacheHitTokens?: number
+}
+
+/** Output token ceiling for OpenAI-compatible providers (DeepSeek included).
+ *  DeepSeek's hard max output is 8K, so this bounds runaway generation without
+ *  exceeding the API limit. The ingest pipeline's stable 4-stage loop benefits
+ *  from this cap because an unbounded model would otherwise waste output tokens. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+interface OpenAiBody {
+  messages: ChatMessage[]
+  stream: boolean
+  max_tokens: number
+}
+
 interface ProviderConfig {
   url: string
   headers: Record<string, string>
   buildBody: (messages: ChatMessage[]) => unknown
   parseStream: (line: string) => string | null
+  /**
+   * Optional usage parser for OpenAI-compatible SSE streams. Extracts the final
+   * chunk's `usage` object so callers can record real token counts and (for DeepSeek)
+   * the prefix-cache hit count. Only set for providers that emit OpenAI-style usage.
+   */
+  parseUsage?: (line: string) => TokenUsage | null
   /**
    * Whether the non-streaming response can be parsed by extractAssistantTextFromResponse
    * (OpenAI-compatible {choices[0].message.content}). Used to gate native-HTTP fallback
@@ -96,6 +127,49 @@ function parseOpenAiLine(line: string): string | null {
   }
 }
 
+/**
+ * Extract the final usage chunk from an OpenAI-compatible SSE stream
+ * (DeepSeek emits it the same way). DeepSeek reports prefix-cache hits via
+ * `prompt_tokens_details.cached_tokens` (current) or `prompt_cache_hit_tokens`
+ * (legacy). Returns null for normal delta lines so it's safe to call on every line.
+ */
+function parseOpenAiUsage(line: string): TokenUsage | null {
+  if (!line.startsWith("data: ")) return null
+  const data = line.slice(6).trim()
+  if (data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data) as {
+      usage?: {
+        prompt_tokens?: number
+        completion_tokens?: number
+        total_tokens?: number
+        prompt_cache_hit_tokens?: number
+        prompt_cache_hits?: number
+        prompt_tokens_details?: {
+          cached_tokens?: number
+          cache_hits?: number
+        }
+      }
+    }
+    const u = parsed.usage
+    if (!u) return null
+    const details = u.prompt_tokens_details
+    const cacheHit =
+      details?.cached_tokens ??
+      details?.cache_hits ??
+      u.prompt_cache_hit_tokens ??
+      u.prompt_cache_hits
+    return {
+      promptTokens: u.prompt_tokens,
+      completionTokens: u.completion_tokens,
+      totalTokens: u.total_tokens,
+      cacheHitTokens: cacheHit,
+    }
+  } catch {
+    return null
+  }
+}
+
 function parseAnthropicLine(line: string): string | null {
   if (!line.startsWith("data: ")) return null
   const data = line.slice(6).trim()
@@ -145,11 +219,18 @@ function parseGoogleLine(line: string): string | null {
   }
 }
 
-function buildOpenAiBody(messages: ChatMessage[]): unknown {
-  return { messages, stream: true }
+function buildOpenAiBody(messages: ChatMessage[]): OpenAiBody {
+  return { messages, stream: true, max_tokens: DEFAULT_MAX_OUTPUT_TOKENS }
 }
 
-function buildAnthropicBody(messages: ChatMessage[]): unknown {
+interface AnthropicBody {
+  messages: ChatMessage[]
+  system?: string
+  stream: boolean
+  max_tokens: number
+}
+
+function buildAnthropicBody(messages: ChatMessage[]): AnthropicBody {
   const systemMessages = messages.filter((m) => m.role === "system")
   const conversationMessages = messages.filter((m) => m.role !== "system")
   const system = systemMessages.map((m) => m.content).join("\n") || undefined
@@ -203,6 +284,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
         isOpenAiCompatible: true,
       }
     }
@@ -257,6 +339,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
         isOpenAiCompatible: true,
       }
 
@@ -276,6 +359,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           temperature: 1.0,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
         isOpenAiCompatible: true,
       }
     }
@@ -295,6 +379,27 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
+        isOpenAiCompatible: true,
+      }
+    }
+
+    case "deepseek": {
+      const baseUrl = customEndpoint
+        ? customEndpoint.replace(/\/$/, "")
+        : "https://api.deepseek.com/v1"
+      return {
+        url: `${baseUrl}/chat/completions`,
+        headers: {
+          "Content-Type": JSON_CONTENT_TYPE,
+          Authorization: `Bearer ${apiKey}`,
+        },
+        buildBody: (messages) => ({
+          ...buildOpenAiBody(messages),
+          model,
+        }),
+        parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
         isOpenAiCompatible: true,
       }
     }
@@ -356,6 +461,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
         isOpenAiCompatible: true,
       }
 

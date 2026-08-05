@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex"
 import "katex/dist/katex.min.css"
 import {
   Bot, User, FileText, BookmarkPlus, ChevronDown, ChevronRight, RefreshCw, Copy, Check,
-  Users, Lightbulb, BookOpen, HelpCircle, GitMerge, BarChart3, Layout, Globe, Paperclip,
+  Users, Lightbulb, BookOpen, HelpCircle, GitMerge, BarChart3, Layout, Globe,
 } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile, writeFile, listDirectory, readFileBinary } from "@/commands/fs"
@@ -15,7 +15,6 @@ import type { DisplayMessage } from "@/stores/chat-store"
 import type { FileNode } from "@/types/wiki"
 
 import { convertLatexToUnicode } from "@/lib/latex-to-unicode"
-import { enrichWithWikilinks } from "@/lib/enrich-wikilinks"
 import { normalizePath, getFileName } from "@/lib/path-utils"
 import { appendDailyLog } from "@/lib/wiki-housekeeping"
 
@@ -408,6 +407,14 @@ function getRefType(path: string): string {
   if (path.includes("/comparisons/")) return "comparison"
   if (path.includes("overview")) return "overview"
   if (path.includes("raw/sources/")) return "clip"
+  // Chinese wiki directories (Codex CLI multi-source ask)
+  if (path.includes("/股票/")) return "entity"
+  if (path.includes("/概念/")) return "concept"
+  if (path.includes("/源文档/")) return "source"
+  if (path.includes("/查询/")) return "query"
+  if (path.includes("/模式/")) return "synthesis"
+  if (path.includes("/总结/")) return "comparison"
+  if (path.includes("/市场环境/")) return "overview"
   return "source"
 }
 
@@ -538,7 +545,6 @@ function extractCitedPages(text: string): CitedPage[] {
   if (wikilinks) {
     const seen = new Set<string>()
     const pages: CitedPage[] = []
-    const WIKI_DIRS = ["entities", "concepts", "sources", "queries", "synthesis", "comparisons"]
 
     for (const link of wikilinks) {
       const nameMatch = link.match(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/)
@@ -616,7 +622,7 @@ function LocalImage({ src, alt }: { src: string; alt?: string }) {
       try {
         const data = await readFileBinary(absolutePath)
         if (cancelled) return
-        const blob = new Blob([data])
+        const blob = new Blob([data as BlobPart])
         objectUrl = URL.createObjectURL(blob)
         setUrl(objectUrl)
       } catch (err) {
@@ -824,64 +830,6 @@ function processContent(text: string): string {
   )
 
   return result
-}
-
-function SourceRef({ fileName }: { fileName: string }) {
-  const project = useWikiStore((s) => s.project)
-  const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
-  const setFileContent = useWikiStore((s) => s.setFileContent)
-  const setActiveView = useWikiStore((s) => s.setActiveView)
-
-  const handleClick = useCallback(async (e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!project) return
-    const pp = normalizePath(project.path)
-
-    // Try exact match first, then search with the name as given
-    const candidates = [
-      `${pp}/raw/sources/${fileName}`,
-    ]
-
-    // If fileName has no extension, try to find a matching file
-    if (!fileName.includes(".")) {
-      for (const sf of cachedSourceFiles) {
-        const stem = sf.replace(/\.[^.]+$/, "")
-        if (stem === fileName || sf.startsWith(fileName)) {
-          candidates.unshift(`${pp}/raw/sources/${sf}`)
-        }
-      }
-    }
-
-    setActiveView("wiki")
-
-    for (const path of candidates) {
-      try {
-        const content = await readFile(path)
-        setSelectedFile(path)
-        setFileContent(content)
-        return
-      } catch {
-        // try next
-      }
-    }
-
-    // Fallback: just set the path even if we can't read it
-    setSelectedFile(candidates[0])
-    setFileContent(`Unable to load: ${fileName}`)
-  }, [project, fileName, setSelectedFile, setFileContent, setActiveView])
-
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="inline-flex items-center gap-0.5 rounded bg-accent/50 px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-accent transition-colors"
-      title={`Open source: ${fileName}`}
-    >
-      <Paperclip className="inline h-3 w-3" />
-      {fileName}
-    </button>
-  )
 }
 
 function WikiLink({ pageName, children }: { pageName: string; children: React.ReactNode }) {

@@ -8,13 +8,30 @@ import { execFile, execFileSync, spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { promisify } from "node:util"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 
 export const execFileAsync = promisify(execFile)
 
 export const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
 
-export const DEFAULT_PROJECT_PATH = "/Users/jiegege/Desktop/杰杰杰"
+// Resolution order for the data workspace when --project is not supplied:
+//   1. TRADING_WIKI_PROJECT env var (explicit override)
+//   2. the in-repo workspace zTradingData/小张的交易复盘 (present on this machine)
+//   3. the original hard-coded macOS path (kept for backwards compatibility)
+// Without step 2 a Windows run would silently create D:/Users/jiegege/Desktop/杰杰杰
+// and write outputs to a directory the user never sees.
+const REPO_ROOT = path.resolve(MODULE_DIR, "..", "..", "..")
+const IN_REPO_WORKSPACE = path.join(REPO_ROOT, "zTradingData", "小张的交易复盘")
+const LEGACY_PROJECT_PATH = "/Users/jiegege/Desktop/杰杰杰"
+
+function resolveDefaultProjectPath() {
+  const fromEnv = process.env.TRADING_WIKI_PROJECT?.trim()
+  if (fromEnv) return fromEnv
+  if (existsSync(IN_REPO_WORKSPACE)) return IN_REPO_WORKSPACE
+  return LEGACY_PROJECT_PATH
+}
+
+export const DEFAULT_PROJECT_PATH = resolveDefaultProjectPath()
 
 export const REPORT_ROOT = ".llm-wiki/codex-ingest"
 
@@ -1448,6 +1465,42 @@ export async function requestCodexExecText({
   return text
 }
 
+export async function requestOpenAICompatibleText({ apiKey, endpoint, model, prompt, instructions, reasoningEffort, timeoutMs }) {
+  const normalizedEndpoint = (endpoint ?? "https://api.openai.com").replace(/\/+$/, "")
+  const chatEndpoint = `${normalizedEndpoint}${/\/v1$/i.test(normalizedEndpoint) ? "" : "/v1"}/chat/completions`
+  const body = {
+    model,
+    messages: [
+      { role: "system", content: instructions ?? "" },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0.2,
+  }
+  const resolvedTimeoutMs = parsePositiveInteger(timeoutMs, 0)
+  const controller = resolvedTimeoutMs > 0 ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), resolvedTimeoutMs) : null
+  try {
+    const response = await fetch(chatEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller?.signal,
+    })
+    if (!response.ok) {
+      throw new Error(`OpenAI-compatible API failed: HTTP ${response.status} ${await response.text()}`)
+    }
+    const parsed = await response.json()
+    return parsed?.choices?.[0]?.message?.content ?? ""
+  } catch (err) {
+    if (controller?.signal.aborted) throw new Error(`OpenAI-compatible API timed out after ${resolvedTimeoutMs}ms`)
+    throw err
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 export async function requestResponsesText({ apiKey, endpoint, model, prompt, instructions, reasoningEffort, timeoutMs }) {
   const body = buildResponsesBody({
     model,

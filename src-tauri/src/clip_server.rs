@@ -77,8 +77,7 @@ pub fn start_clip_server() {
     set_clip_server_token(generate_token());
 
     thread::spawn(|| {
-        let mut restart_count: u32 = 0;
-
+        let mut restart_count: u32;
         loop {
             // Try to bind the port with retries
             let server = {

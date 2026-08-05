@@ -7,6 +7,11 @@ pub struct PgConfig {
     pub user: Option<String>,
     pub password: Option<String>,
     pub database: Option<String>,
+    pub table_name: Option<String>,
+    pub col_ticker: Option<String>,
+    pub col_stock_name: Option<String>,
+    pub has_date_column: Option<bool>,
+    pub mairui_api_licence: Option<String>,
 }
 
 impl PgConfig {

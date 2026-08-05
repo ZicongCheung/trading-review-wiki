@@ -1,12 +1,9 @@
 import { webSearch } from "./web-search"
 import { streamChat } from "./llm-client"
-import { autoIngest } from "./ingest"
 import { writeFile, readFile, listDirectory } from "@/commands/fs"
 import { useWikiStore, type LlmConfig, type SearchApiConfig } from "@/stores/wiki-store"
 import { useResearchStore, type ResearchTask } from "@/stores/research-store"
 import { normalizePath } from "@/lib/path-utils"
-
-let processing = false
 
 /**
  * Queue a deep research task. Automatically starts processing if under concurrency limit.
@@ -112,6 +109,9 @@ async function executeResearch(
       // no index yet
     }
 
+    // R1: Frozen, byte-identical system prefix (DeepSeek APC cache-stable).
+    // Stable rules only — the variable wiki index is moved to the user message so the
+    // prefix never changes between research calls and can be served from cache.
     const systemPrompt = [
       "You are a research assistant. Synthesize the web search results into a comprehensive wiki page.",
       "",
@@ -119,7 +119,7 @@ async function executeResearch(
       "- ALWAYS match the language of the research topic. If the topic is in Chinese, write in Chinese. If in English, write in English.",
       "",
       "## Cross-referencing (IMPORTANT)",
-      "- The wiki already has existing pages listed in the Wiki Index below.",
+      "- The wiki may already have existing pages listed in the Wiki Index provided in the user message.",
       "- When your synthesis mentions an entity or concept that exists in the wiki, ALWAYS use [[wikilink]] syntax to link to it.",
       "- For example, if the wiki has an entity 'anthropic', write [[anthropic]] when mentioning it.",
       "- This is critical for connecting new research to existing knowledge in the graph.",
@@ -130,17 +130,26 @@ async function executeResearch(
       "- Note contradictions or gaps",
       "- Suggest additional sources worth finding",
       "- Neutral, encyclopedic tone",
-      "",
-      wikiIndex ? `## Existing Wiki Index (link to these pages with [[wikilink]])\n${wikiIndex}` : "",
-    ].filter(Boolean).join("\n")
+    ].join("\n")
 
     let accumulated = ""
+
+    const userContent = [
+      `Research topic: **${topic}**`,
+      "",
+      "## Web Search Results",
+      "",
+      searchContext,
+      "",
+      "Synthesize into a wiki page.",
+      wikiIndex ? `\n## Existing Wiki Index (link to these pages with [[wikilink]])\n${wikiIndex}` : "",
+    ].filter(Boolean).join("\n")
 
     await streamChat(
       llmConfig,
       [
         { role: "system", content: systemPrompt },
-        { role: "user", content: `Research topic: **${topic}**\n\n## Web Search Results\n\n${searchContext}\n\nSynthesize into a wiki page.` },
+        { role: "user", content: userContent },
       ],
       {
         onToken: (token) => {
@@ -197,7 +206,7 @@ const savingTasks = new Set<string>()
 export async function saveResearchDraft(
   projectPath: string,
   task: ResearchTask,
-  llmConfig: LlmConfig,
+  _llmConfig: LlmConfig,
 ): Promise<string> {
   const pp = normalizePath(projectPath)
   const store = useResearchStore.getState()

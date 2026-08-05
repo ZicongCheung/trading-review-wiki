@@ -1,10 +1,17 @@
-import { useWikiStore, type PgConfig } from "@/stores/wiki-store"
+import { useWikiStore, type PgConfig, type CustomProviderConfig, type LlmConfig } from "@/stores/wiki-store"
 import { useChatStore } from "@/stores/chat-store"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { syncStockCodes, getStockCodesStatus, type SyncResult } from "@/commands/stock-codes"
+import {
+  syncStockCodes,
+  getStockCodesStatus,
+  updateStockCodes,
+  getStockSyncStatus,
+  type SyncResult,
+  type FetchResult,
+} from "@/commands/stock-codes"
 import { savePgConfig } from "@/lib/project-store"
 import { useTranslation } from "react-i18next"
 import i18n from "@/i18n"
@@ -16,6 +23,7 @@ import { MigrateSchemaDialog } from "./migrate-schema-dialog"
 import { NormalizeDirsDialog } from "./normalize-dirs-dialog"
 import { CleanupGarbageDialog } from "./cleanup-garbage-dialog"
 import { BodyResidueDialog } from "./body-residue-dialog"
+import { ImaSyncSection } from "./ima-sync-section"
 import {
   Stethoscope,
   Eye,
@@ -30,8 +38,17 @@ import {
   FolderTree,
   FileScan,
   Trash2,
+  RefreshCw,
+  KeyRound,
+  X,
+  Plus,
 } from "lucide-react"
-import { previewProviderUrl, testLlmConnection, type LlmTestResult } from "@/lib/llm-test"
+import {
+  previewProviderUrl,
+  testLlmConnection,
+  fetchProviderModels,
+  type LlmTestResult,
+} from "@/lib/llm-test"
 
 const PROVIDERS = [
   { value: "openai" as const, label: "OpenAI", models: ["gpt-4o", "gpt-4.1", "gpt-4o-mini"] },
@@ -39,16 +56,19 @@ const PROVIDERS = [
   { value: "google" as const, label: "Google", models: ["gemini-2.5-pro", "gemini-2.5-flash"] },
   { value: "minimax" as const, label: "MiniMax", models: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"] },
   { value: "kimi" as const, label: "Kimi Code", models: ["kimi-for-coding"] },
-  { value: "codex" as const, label: "Codex (Responses API)", models: ["gpt-5.4", "gpt-5.3-codex"] },
-  { value: "ollama" as const, label: "Ollama (Local)", models: [] },
-  { value: "custom" as const, label: "Custom", models: [] },
+  // DeepSeek-V4 models referenced by esengine/DeepSeek-Reasonix (DeepSeek-native agent).
+  // deepseek-chat / deepseek-reasoner were deprecated by DeepSeek on 2026-07-24.
+  { value: "deepseek" as const, label: "DeepSeek", models: ["deepseek-v4-flash", "deepseek-v4-pro"] },
+  { value: "codex" as const, label: "Codex（Responses API）", models: ["gpt-5.4", "gpt-5.3-codex"] },
+  { value: "ollama" as const, label: "Ollama（本地）", models: [] },
+  { value: "custom" as const, label: "自定义", models: [] },
 ]
 
 const REASONING_EFFORTS = [
-  { value: "minimal" as const, label: "Minimal" },
-  { value: "low" as const, label: "Low" },
-  { value: "medium" as const, label: "Medium" },
-  { value: "high" as const, label: "High" },
+  { value: "minimal" as const, label: "最小" },
+  { value: "low" as const, label: "低" },
+  { value: "medium" as const, label: "中" },
+  { value: "high" as const, label: "高" },
 ]
 
 const LANGUAGES = [
@@ -84,6 +104,21 @@ export function SettingsView() {
   const [embeddingEndpoint, setEmbeddingEndpoint] = useState(embeddingConfig.endpoint)
   const [embeddingApiKey, setEmbeddingApiKey] = useState(embeddingConfig.apiKey)
   const [embeddingModel, setEmbeddingModel] = useState(embeddingConfig.model)
+  // 每提供商独立保存的密钥/模型映射（本地镜像，随 llmConfig 重载而重置）
+  const [keysMap, setKeysMap] = useState<Partial<Record<string, string>>>(llmConfig.keys ?? {})
+  const [modelsMap, setModelsMap] = useState<Partial<Record<string, string>>>(llmConfig.models ?? {})
+  const [keyHistoryMap, setKeyHistoryMap] = useState<Partial<Record<string, string[]>>>(
+    llmConfig.keyHistory ?? {},
+  )
+  // 已保存的「自定义提供商」按钮（在提供商选择区动态渲染，可删除）
+  const [customProviders, setCustomProviders] = useState<CustomProviderConfig[]>(
+    Array.isArray(llmConfig.customProviders) ? llmConfig.customProviders : [],
+  )
+  const [activeCustomId, setActiveCustomId] = useState<string | null>(null)
+  const [customProviderDraftName, setCustomProviderDraftName] = useState("")
+  const [showCustomProviderInput, setShowCustomProviderInput] = useState(false)
+  const [confirmDeleteCustomId, setConfirmDeleteCustomId] = useState<string | null>(null)
+  const [apiKeyFocused, setApiKeyFocused] = useState(false)
   const [saved, setSaved] = useState(false)
   const [currentLang, setCurrentLang] = useState(i18n.language)
   const [doctorOpen, setDoctorOpen] = useState(false)
@@ -95,9 +130,47 @@ export function SettingsView() {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null)
   const [urlCopied, setUrlCopied] = useState(false)
+  // 动态模型列表（从各提供商的 models 接口拉取，OpenAI 兼容 /v1/models、Ollama /api/tags 等）
+  const [fetchedModels, setFetchedModels] = useState<string[] | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
   const appTheme = useWikiStore((s) => s.appTheme)
   const setAppTheme = useWikiStore((s) => s.setAppTheme)
+  const settingsFocusSection = useWikiStore((s) => s.settingsFocusSection)
+  const setSettingsFocusSection = useWikiStore((s) => s.setSettingsFocusSection)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 侧栏「研报同步」等入口：打开设置后滚到对应区块
+  useEffect(() => {
+    if (!settingsFocusSection) return
+    const id = settingsFocusSection
+    let cancelled = false
+    const tryScroll = (attempt = 0) => {
+      if (cancelled) return
+      const el = document.getElementById(id)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" })
+        // 轻量高亮一闪，方便识别定位
+        el.classList.add("ring-2", "ring-primary/60")
+        window.setTimeout(() => {
+          el.classList.remove("ring-2", "ring-primary/60")
+        }, 1600)
+        setSettingsFocusSection(null)
+        return
+      }
+      if (attempt < 12) {
+        window.setTimeout(() => tryScroll(attempt + 1), 50)
+      } else {
+        setSettingsFocusSection(null)
+      }
+    }
+    // 等设置页布局完成
+    const t = window.setTimeout(() => tryScroll(0), 80)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [settingsFocusSection, setSettingsFocusSection])
 
   useEffect(() => {
     setProvider(llmConfig.provider)
@@ -106,6 +179,15 @@ export function SettingsView() {
     setOllamaUrl(llmConfig.ollamaUrl)
     setCustomEndpoint(llmConfig.customEndpoint)
     setReasoningEffort(llmConfig.reasoningEffort ?? "medium")
+    setKeysMap(llmConfig.keys ?? {})
+    setModelsMap(llmConfig.models ?? {})
+    setKeyHistoryMap(llmConfig.keyHistory ?? {})
+    setCustomProviders(Array.isArray(llmConfig.customProviders) ? llmConfig.customProviders : [])
+    // 恢复选中的自定义提供商（若 id 已失效则回落为 null，避免高亮一个不存在的项）
+    const restoredId = llmConfig.activeCustomId ?? null
+    const list = Array.isArray(llmConfig.customProviders) ? llmConfig.customProviders : []
+    const matched = restoredId ? list.find((p) => p.id === restoredId) : null
+    setActiveCustomId(matched ? restoredId : null)
   }, [llmConfig])
 
   useEffect(() => {
@@ -161,6 +243,79 @@ export function SettingsView() {
     }
   }
 
+  // 切换提供商 / 修改密钥(endpoint) 时，自动从该提供商的 models 接口拉取模型列表。
+  // Ollama 是本地服务，按用户偏好不参与自动刷新，仅手动「刷新模型」按钮触发。
+  // 其他提供商需要有效凭据（custom 需 endpoint + API Key；其余需 API Key），缺一不可即不发起请求，并清空已拉取列表。
+  useEffect(() => {
+    let cancelled = false
+    const timer = setTimeout(() => {
+      void (async () => {
+        setFetchedModels(null)
+        setModelsError(null)
+        // Ollama 不参与自动刷新
+        if (provider === "ollama") return
+        if (provider === "custom") {
+          if (!customEndpoint.trim() || !apiKey.trim()) return
+        } else if (!apiKey.trim()) {
+          return
+        }
+        setModelsLoading(true)
+        const models = await fetchProviderModels(provider, {
+          endpoint: customEndpoint,
+          apiKey,
+          ollamaUrl,
+        })
+        if (cancelled) return
+        setModelsLoading(false)
+        if (models.length > 0) {
+          setFetchedModels(models)
+          setModelsError(null)
+        } else {
+          setFetchedModels(null)
+          setModelsError("未能从接口获取模型列表，已回退到默认列表")
+        }
+      })()
+    }, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [provider, apiKey, customEndpoint, ollamaUrl])
+
+  async function refreshModels() {
+    if (provider === "custom" && !customEndpoint.trim()) {
+      setModelsError("请先填写自定义 Endpoint")
+      return
+    }
+    if (provider === "custom" && !apiKey.trim()) {
+      setModelsError("请先填写 API Key")
+      return
+    }
+    if (provider === "ollama" && !ollamaUrl.trim()) {
+      setModelsError("请先填写 Ollama 地址")
+      return
+    }
+    if (provider !== "ollama" && !apiKey.trim()) {
+      setModelsError("请先填写 API Key")
+      return
+    }
+    setModelsLoading(true)
+    setModelsError(null)
+    const models = await fetchProviderModels(provider, {
+      endpoint: customEndpoint,
+      apiKey,
+      ollamaUrl,
+    })
+    setModelsLoading(false)
+    if (models.length > 0) {
+      setFetchedModels(models)
+      setModelsError(null)
+    } else {
+      setFetchedModels(null)
+      setModelsError("未能从接口获取模型列表，已回退到默认列表")
+    }
+  }
+
   async function handleCopyUrl() {
     if (!previewUrl) return
     try {
@@ -172,9 +327,89 @@ export function SettingsView() {
     }
   }
 
+  function handleSaveCustomProvider() {
+    if (provider !== "custom") return
+    const name = customProviderDraftName.trim()
+    if (!name) return
+    const next: CustomProviderConfig = {
+      id: `cp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      endpoint: customEndpoint,
+      apiKey,
+      model,
+      reasoningEffort: reasoningEffort,
+    }
+    const prevList = Array.isArray(customProviders) ? customProviders : []
+    const existing = prevList.find((p) => p.name === name)
+    const nextList = existing
+      ? prevList.map((p) => (p.name === name ? { ...next, id: p.id } : p)) // 同名覆盖，保留原 id
+      : [next, ...prevList]
+    setCustomProviders(nextList)
+    setCustomProviderDraftName("")
+    setShowCustomProviderInput(false)
+    // 同步持久化到 store（单一数据源）。否则上方的 llmConfig 同步 effect 在 llmConfig 变化时，
+    // 会用 store 里的旧 customProviders 覆盖本地列表，导致刚保存的项立刻消失。
+    persistCustomProviders(nextList)
+  }
+
+  function handleDeleteCustomProvider(id: string) {
+    const nextList = (Array.isArray(customProviders) ? customProviders : []).filter((p) => p.id !== id)
+    setCustomProviders(nextList)
+    if (activeCustomId === id) setActiveCustomId(null)
+    setConfirmDeleteCustomId(null)
+    persistCustomProviders(nextList)
+  }
+
+  // 把当前 LLM 配置写回 store 并落盘（含 activeCustomId）——供选择提供商 / 选择自定义项时即时持久化
+  function persistLlmConfig(next: LlmConfig) {
+    setLlmConfig(next)
+    void import("@/lib/project-store").then(({ saveLlmConfig }) => void saveLlmConfig(next))
+  }
+
+  // 把最新的 customProviders 列表写回 store 并落盘（基于当前本地字段值重建，避免丢失未保存的编辑）
+  function persistCustomProviders(list: CustomProviderConfig[]) {
+    persistLlmConfig({
+      provider,
+      apiKey,
+      model,
+      ollamaUrl,
+      customEndpoint,
+      maxContextSize,
+      reasoningEffort,
+      keys: keysMap,
+      models: modelsMap,
+      keyHistory: keyHistoryMap,
+      customProviders: list,
+      activeCustomId,
+    })
+  }
+
   async function handleSave() {
     const { saveLlmConfig, saveSearchApiConfig, saveEmbeddingConfig } = await import("@/lib/project-store")
-    const newConfig = { provider, apiKey, model, ollamaUrl, customEndpoint, maxContextSize, reasoningEffort }
+    // 把当前激活提供商的密钥/模型写入对应映射，并维护历史 key 列表（去重）
+    const nextKeys = { ...keysMap, [provider]: apiKey }
+    const nextModels = { ...modelsMap, [provider]: model }
+    const trimmedKey = apiKey.trim()
+    const prevHistoryRaw = keyHistoryMap[provider]
+    const prevHistory: string[] = Array.isArray(prevHistoryRaw)
+      ? prevHistoryRaw.filter((k): k is string => typeof k === "string" && k.length > 0)
+      : []
+    const nextHistory = trimmedKey && !prevHistory.includes(trimmedKey) ? [...prevHistory, trimmedKey] : prevHistory
+    const nextKeyHistory = { ...keyHistoryMap, [provider]: nextHistory }
+    const newConfig = {
+      provider,
+      apiKey,
+      model,
+      ollamaUrl,
+      customEndpoint,
+      maxContextSize,
+      reasoningEffort,
+      keys: nextKeys,
+      models: nextModels,
+      keyHistory: nextKeyHistory,
+      customProviders,
+      activeCustomId,
+    }
     const newSearchConfig = { provider: searchProvider, apiKey: searchApiKey }
     const newEmbeddingConfig = { enabled: embeddingEnabled, endpoint: embeddingEndpoint, apiKey: embeddingApiKey, model: embeddingModel }
     setSearchApiConfig(newSearchConfig)
@@ -183,6 +418,10 @@ export function SettingsView() {
     await saveEmbeddingConfig(newEmbeddingConfig)
     setLlmConfig(newConfig)
     await saveLlmConfig(newConfig)
+    // 同步本地映射镜像，避免保存后切换 provider 时回退到旧值
+    setKeysMap(nextKeys)
+    setModelsMap(nextModels)
+    setKeyHistoryMap(nextKeyHistory)
     setSaved(true)
     if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
     savedTimerRef.current = setTimeout(() => setSaved(false), 2000)
@@ -269,17 +508,99 @@ export function SettingsView() {
                   <button
                     key={p.value}
                     onClick={() => {
+                      const nextApiKey = keysMap[p.value] ?? ""
+                      const nextModel = modelsMap[p.value] || p.models[0] || ""
                       setProvider(p.value)
-                      setModel(p.models[0] || "")
+                      setActiveCustomId(null)
+                      // 切换到该提供商：输入框回填该提供商已存的密钥（或清空），模型刷新为对应提供商的模型
+                      setApiKey(nextApiKey)
+                      setModel(nextModel)
+                      persistLlmConfig({
+                        provider: p.value,
+                        apiKey: nextApiKey,
+                        model: nextModel,
+                        ollamaUrl,
+                        customEndpoint,
+                        maxContextSize,
+                        reasoningEffort,
+                        keys: keysMap,
+                        models: modelsMap,
+                        keyHistory: keyHistoryMap,
+                        customProviders: Array.isArray(customProviders) ? customProviders : [],
+                        activeCustomId: null,
+                      })
                     }}
                     className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                      provider === p.value
+                      provider === p.value && activeCustomId === null
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-border hover:bg-accent"
                     }`}
                   >
                     {p.label}
                   </button>
+                ))}
+                {customProviders.map((cp) => (
+                  <div
+                    key={cp.id}
+                    className={`group flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-sm transition-colors ${
+                      provider === "custom" && activeCustomId === cp.id
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border hover:bg-accent"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextApiKey = cp.apiKey || keysMap["custom"] || ""
+                        const nextKeysMap = { ...keysMap, custom: nextApiKey }
+                        const nextModelsMap = { ...modelsMap, custom: cp.model }
+                        setProvider("custom")
+                        setActiveCustomId(cp.id)
+                        setCustomEndpoint(cp.endpoint)
+                        setApiKey(nextApiKey)
+                        setModel(cp.model)
+                        if (cp.reasoningEffort) setReasoningEffort(cp.reasoningEffort)
+                        setKeysMap(nextKeysMap)
+                        setModelsMap(nextModelsMap)
+                        persistLlmConfig({
+                          provider: "custom",
+                          apiKey: nextApiKey,
+                          model: cp.model,
+                          ollamaUrl,
+                          customEndpoint: cp.endpoint,
+                          maxContextSize,
+                          reasoningEffort: cp.reasoningEffort ?? reasoningEffort,
+                          keys: nextKeysMap,
+                          models: nextModelsMap,
+                          keyHistory: keyHistoryMap,
+                          customProviders: Array.isArray(customProviders) ? customProviders : [],
+                          activeCustomId: cp.id,
+                        })
+                      }}
+                      className="px-1.5 py-1"
+                    >
+                      {cp.name}
+                    </button>
+                    {confirmDeleteCustomId === cp.id ? (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCustomProvider(cp.id)}
+                        className="rounded px-1 py-0.5 text-[11px] text-destructive hover:bg-destructive/15"
+                        title={t("settings.deleteCustomProvider")}
+                      >
+                        {t("settings.deleteCustomProvider")}?
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteCustomId(cp.id)}
+                        className="rounded px-1 py-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                        title={t("settings.deleteCustomProvider")}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
@@ -289,6 +610,7 @@ export function SettingsView() {
               provider === "openai" ||
               provider === "anthropic" ||
               provider === "kimi" ||
+              provider === "deepseek" ||
               provider === "codex") && (
               <div className="space-y-2">
                 <Label htmlFor="customEndpoint">
@@ -300,9 +622,11 @@ export function SettingsView() {
                         ? "Anthropic Endpoint"
                         : provider === "kimi"
                           ? "Kimi Code Endpoint"
-                          : provider === "codex"
-                            ? "Codex Endpoint"
-                            : t("settings.customEndpoint")}
+                          : provider === "deepseek"
+                            ? "DeepSeek Endpoint"
+                            : provider === "codex"
+                              ? "Codex Endpoint"
+                              : t("settings.customEndpoint")}
                 </Label>
                 <Input
                   id="customEndpoint"
@@ -317,9 +641,11 @@ export function SettingsView() {
                           ? "https://api.anthropic.com"
                           : provider === "kimi"
                             ? "https://api.kimi.com/coding/v1"
-                            : provider === "codex"
-                              ? "https://api.suyacode.com"
-                              : "https://your-api.example.com/v1"
+                            : provider === "deepseek"
+                              ? "https://api.deepseek.com/v1"
+                              : provider === "codex"
+                                ? "https://api.suyacode.com"
+                                : "https://your-api.example.com/v1"
                   }
                 />
                 <p className="text-xs text-muted-foreground">
@@ -331,16 +657,18 @@ export function SettingsView() {
                         ? "留空使用官方 https://api.anthropic.com，可填写代理 base URL（自动拼接 /v1/messages）"
                         : provider === "kimi"
                           ? "留空使用 Kimi Code 编码端点（256K 上下文 / kimi-for-coding 模型）；如需通用 Kimi 可填 https://api.moonshot.cn/v1 并改 model 为 moonshot-v1-128k"
-                          : provider === "codex"
-                            ? "留空使用官方 https://api.openai.com，可填写中转站 base URL（自动拼接 /v1/responses）。适配 GPT-5 / Codex 系列推理模型。"
-                            : t("settings.customEndpointHint")}
+                          : provider === "deepseek"
+                            ? "留空使用官方 https://api.deepseek.com/v1（自动拼接 /chat/completions）。适配 DeepSeek V4 / V3 / Reasoner，自动启用前缀缓存以降低输入 token 成本。"
+                            : provider === "codex"
+                              ? "留空使用官方 https://api.openai.com，可填写中转站 base URL（自动拼接 /v1/responses）。适配 GPT-5 / Codex 系列推理模型。"
+                              : t("settings.customEndpointHint")}
                 </p>
               </div>
             )}
 
             {provider === "codex" && (
               <div className="space-y-2">
-                <Label>Reasoning effort</Label>
+                <Label>思考深度</Label>
                 <div className="flex flex-wrap gap-2">
                   {REASONING_EFFORTS.map((e) => (
                     <button
@@ -357,7 +685,7 @@ export function SettingsView() {
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  控制模型思考深度。Minimal 最快但浅；Medium 默认；High 最深思考最慢，token 消耗最大。
+                  控制模型思考深度。档位越低速度越快、思考越浅；档位越高推理越深、速度越慢、token 消耗越大。
                 </p>
               </div>
             )}
@@ -377,12 +705,18 @@ export function SettingsView() {
             {provider !== "ollama" && (
               <div className="space-y-2">
                 <Label htmlFor="apiKey">{t("settings.apiKey")}</Label>
-                <div className="relative">
+                <div className="relative" onBlur={() => setApiKeyFocused(false)}>
                   <Input
                     id="apiKey"
                     type={showApiKey ? "text" : "password"}
                     value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setApiKey(v)
+                      // 实时写入该提供商的密钥映射，切换 provider 时不会丢失本次编辑
+                      setKeysMap((m) => ({ ...m, [provider]: v }))
+                    }}
+                    onFocus={() => setApiKeyFocused(true)}
                     className="pr-9 font-mono"
                     placeholder={
                       provider === "custom"
@@ -399,44 +733,165 @@ export function SettingsView() {
                   >
                     {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                   </button>
+                  {apiKeyFocused &&
+                    (() => {
+                      const raw = keyHistoryMap[provider]
+                      const historyArr: string[] = Array.isArray(raw)
+                        ? raw.filter((k): k is string => typeof k === "string" && k.length > 0)
+                        : []
+                      const suggestions = historyArr.filter((k) => k !== apiKey)
+                      if (suggestions.length === 0) return null
+                      return (
+                        <div className="absolute left-0 right-0 z-20 mt-1 overflow-hidden rounded-md border bg-popover shadow-md">
+                          <div className="border-b px-2 py-1 text-xs text-muted-foreground">
+                            {t("settings.selectSavedKey")}
+                          </div>
+                          {suggestions.map((k, i) => (
+                            <button
+                              key={`${i}-${k.slice(-4)}`}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault()
+                                setApiKey(k)
+                                setKeysMap((m) => ({ ...m, [provider]: k }))
+                                setApiKeyFocused(false)
+                              }}
+                              className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs font-mono hover:bg-accent"
+                            >
+                              <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                              <span>{"•••• " + k.slice(-4)}</span>
+                              <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                                {currentProvider?.label}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )
+                    })()}
                 </div>
               </div>
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="model">{t("settings.model")}</Label>
-              {currentProvider && currentProvider.models.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="flex flex-wrap gap-2">
-                    {currentProvider.models.map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => setModel(m)}
-                        className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                          model === m
-                            ? "border-primary bg-primary text-primary-foreground"
-                            : "border-border hover:bg-accent"
-                        }`}
-                      >
-                        {m}
-                      </button>
-                    ))}
+              <div className="flex items-center justify-between">
+                <Label htmlFor="model">{t("settings.model")}</Label>
+                <button
+                  type="button"
+                  onClick={() => void refreshModels()}
+                  disabled={modelsLoading}
+                  className="flex items-center gap-1 rounded border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                >
+                  <RefreshCw className={`size-3 ${modelsLoading ? "animate-spin" : ""}`} />
+                  刷新模型
+                </button>
+              </div>
+              {(() => {
+                const modelOptions = fetchedModels ?? currentProvider?.models ?? []
+                return modelOptions.length > 0 ? (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-2">
+                      {modelOptions.map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => {
+                            setModel(m)
+                            setModelsMap((mm) => ({ ...mm, [provider]: m }))
+                          }}
+                          className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                            model === m
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border hover:bg-accent"
+                          }`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                    <Input
+                      value={model}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setModel(v)
+                        setModelsMap((m) => ({ ...m, [provider]: v }))
+                      }}
+                      placeholder={t("settings.customModel")}
+                    />
                   </div>
+                ) : (
                   <Input
+                    id="model"
                     value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder={t("settings.customModel")}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setModel(v)
+                      setModelsMap((m) => ({ ...m, [provider]: v }))
+                    }}
+                    placeholder={t("settings.modelPlaceholder")}
                   />
-                </div>
-              ) : (
-                <Input
-                  id="model"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={t("settings.modelPlaceholder")}
-                />
+                )
+              })()}
+              {modelsLoading && (
+                <p className="text-xs text-muted-foreground">正在从接口获取模型列表…</p>
+              )}
+              {modelsError && (
+                <p className="text-xs text-muted-foreground">{modelsError}</p>
               )}
             </div>
+
+            {provider === "custom" && (
+              <div className="space-y-2 border-t pt-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">{t("settings.saveAsCustomProvider")}</Label>
+                  {!showCustomProviderInput ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomProviderInput(true)}
+                      className="flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <Plus className="size-3" />
+                      {t("settings.saveAsCustomProvider")}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        autoFocus
+                        value={customProviderDraftName}
+                        onChange={(e) => setCustomProviderDraftName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleSaveCustomProvider()
+                          if (e.key === "Escape") {
+                            setShowCustomProviderInput(false)
+                            setCustomProviderDraftName("")
+                          }
+                        }}
+                        placeholder={t("settings.customProviderName")}
+                        className="h-7 w-44 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveCustomProvider()}
+                        disabled={!customProviderDraftName.trim()}
+                        className="flex h-7 items-center gap-1 rounded border px-2 text-xs text-primary transition-colors hover:bg-accent disabled:opacity-50"
+                      >
+                        <Check className="size-3" />
+                        {t("settings.saveCustomProvider")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowCustomProviderInput(false)
+                          setCustomProviderDraftName("")
+                        }}
+                        className="flex h-7 items-center gap-1 rounded border px-2 text-xs text-muted-foreground transition-colors hover:bg-accent"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">{t("settings.customProviderHint")}</p>
+              </div>
+            )}
 
             {/* Endpoint preview + connection test */}
             <div className="space-y-2 border-t pt-4">
@@ -503,9 +958,9 @@ export function SettingsView() {
 
           {/* Context Window Size */}
           <div className="space-y-4 rounded-lg border p-4">
-            <h3 className="font-semibold">Context Window</h3>
+            <h3 className="font-semibold">上下文窗口</h3>
             <p className="text-xs text-muted-foreground">
-              Maximum context size sent to the LLM. Larger context allows more wiki pages in each query but costs more tokens.
+              发送给大模型的最大上下文长度。上下文越大，单次问答可带入的 Wiki 页面越多，但消耗的 Token 也越多。
             </p>
 
             <div className="space-y-3">
@@ -515,16 +970,16 @@ export function SettingsView() {
 
           {/* Web Search API section */}
           <div className="space-y-4 rounded-lg border p-4">
-            <h3 className="font-semibold">Web Search (Deep Research)</h3>
+            <h3 className="font-semibold">网络搜索（深度研究）</h3>
             <p className="text-xs text-muted-foreground">
-              Enable AI-powered web research to automatically find relevant sources for knowledge gaps.
+              启用 AI 驱动的网络检索，自动为知识盲区查找相关资料来源。
             </p>
 
             <div className="space-y-2">
-              <Label>Search Provider</Label>
+              <Label>搜索提供方</Label>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { value: "none" as const, label: "Disabled" },
+                  { value: "none" as const, label: "关闭" },
                   { value: "tavily" as const, label: "Tavily" },
                 ].map((p) => (
                   <button
@@ -544,13 +999,13 @@ export function SettingsView() {
 
             {searchProvider !== "none" && (
               <div className="space-y-2">
-                <Label htmlFor="searchApiKey">API Key</Label>
+                <Label htmlFor="searchApiKey">API 密钥</Label>
                 <Input
                   id="searchApiKey"
                   type="password"
                   value={searchApiKey}
                   onChange={(e) => setSearchApiKey(e.target.value)}
-                  placeholder="Enter your Tavily API key (tavily.com)"
+                  placeholder="请输入 Tavily API 密钥（tavily.com）"
                 />
               </div>
             )}
@@ -559,7 +1014,7 @@ export function SettingsView() {
           {/* Embedding Search section */}
           <div className="space-y-4 rounded-lg border p-4">
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold">Vector Search (Embedding)</h3>
+              <h3 className="font-semibold">向量搜索（Embedding）</h3>
               <button
                 onClick={() => setEmbeddingEnabled(!embeddingEnabled)}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
@@ -574,37 +1029,37 @@ export function SettingsView() {
               </button>
             </div>
             <p className="text-xs text-muted-foreground">
-              Enable semantic search using embeddings. Uses the same LLM provider endpoint. Improves search quality for synonym matching and cross-domain discovery.
+              启用基于向量嵌入的语义检索，复用当前大模型服务端点。可提升同义词匹配与跨领域发现的搜索质量。
             </p>
             {embeddingEnabled && (
               <div className="space-y-3">
                 <div className="space-y-2">
-                  <Label>Endpoint</Label>
+                  <Label>服务端点</Label>
                   <Input
                     value={embeddingEndpoint}
                     onChange={(e) => setEmbeddingEndpoint(e.target.value)}
-                    placeholder="e.g. http://127.0.0.1:1234/v1/embeddings"
+                    placeholder="例如 http://127.0.0.1:1234/v1/embeddings"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>API Key (optional)</Label>
+                  <Label>API 密钥（可选）</Label>
                   <Input
                     type="password"
                     value={embeddingApiKey}
                     onChange={(e) => setEmbeddingApiKey(e.target.value)}
-                    placeholder="Leave empty for local models"
+                    placeholder="本地模型可留空"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Model</Label>
+                  <Label>模型</Label>
                   <Input
                     value={embeddingModel}
                     onChange={(e) => setEmbeddingModel(e.target.value)}
-                    placeholder="e.g. text-embedding-qwen3-embedding-0.6b"
+                    placeholder="例如 text-embedding-qwen3-embedding-0.6b"
                   />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Embedding service can be different from the chat LLM. Supports any OpenAI-compatible /v1/embeddings endpoint.
+                  Embedding 服务可与聊天大模型不同，支持任意兼容 OpenAI /v1/embeddings 的端点。
                 </p>
               </div>
             )}
@@ -612,12 +1067,12 @@ export function SettingsView() {
 
           {/* Chat History section */}
           <div className="space-y-4 rounded-lg border p-4">
-            <h3 className="font-semibold">Chat History</h3>
+            <h3 className="font-semibold">聊天历史</h3>
             <p className="text-xs text-muted-foreground">
-              Number of previous messages included when talking to AI. More = better context but uses more tokens.
+              与 AI 对话时携带的历史消息条数。条数越多上下文越完整，但消耗的 Token 也越多。
             </p>
             <div className="space-y-2">
-              <Label>Max conversation messages sent to AI</Label>
+              <Label>发送给 AI 的最大历史消息数</Label>
               <div className="flex flex-wrap gap-2">
                 {HISTORY_OPTIONS.map((n) => (
                   <button
@@ -634,10 +1089,13 @@ export function SettingsView() {
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                Currently: {maxHistoryMessages} messages ({maxHistoryMessages / 2} rounds of conversation)
+                当前：{maxHistoryMessages} 条消息（{maxHistoryMessages / 2} 轮对话）
               </p>
             </div>
           </div>
+
+          {/* IMA Report Sync */}
+          <ImaSyncSection />
 
           {/* PostgreSQL Stock Code Source */}
           <PgConfigSection />
@@ -762,7 +1220,7 @@ function ContextSizeSelector({ value, onChange }: { value: number; onChange: (v:
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm font-medium">{formatSize(value)}</span>
         <span className="text-xs text-muted-foreground">
-          ~{Math.floor(value * 0.6 / 1000)}K chars for wiki content
+          Wiki 内容约 {Math.floor(value * 0.6 / 1000)}K 字符
         </span>
       </div>
       <input
@@ -794,9 +1252,9 @@ function ContextSizeSelector({ value, onChange }: { value: number; onChange: (v:
 }
 
 function formatSize(chars: number): string {
-  if (chars >= 1000000) return `${(chars / 1000000).toFixed(1)}M characters`
-  if (chars >= 1000) return `${Math.round(chars / 1000)}K characters`
-  return `${chars} characters`
+  if (chars >= 1000000) return `${(chars / 1000000).toFixed(1)}M 字符`
+  if (chars >= 1000) return `${Math.round(chars / 1000)}K 字符`
+  return `${chars} 字符`
 }
 
 function PgConfigSection() {
@@ -809,21 +1267,34 @@ function PgConfigSection() {
   const [user, setUser] = useState(pgConfig.user)
   const [password, setPassword] = useState(pgConfig.password)
   const [database, setDatabase] = useState(pgConfig.database)
+  const [tableName, setTableName] = useState(pgConfig.table_name ?? "")
+  const [colTicker, setColTicker] = useState(pgConfig.col_ticker ?? "")
+  const [colStockName, setColStockName] = useState(pgConfig.col_stock_name ?? "")
+  const [hasDateColumn, setHasDateColumn] = useState(pgConfig.has_date_column ?? true)
+  const [mairuiLicence, setMairuiLicence] = useState(pgConfig.mairui_api_licence ?? "")
   const [showPassword, setShowPassword] = useState(false)
+  const [showLicence, setShowLicence] = useState(false)
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [fetching, setFetching] = useState(false)
   const [status, setStatus] = useState<SyncResult | null>(null)
+  const [fetchStatus, setFetchStatus] = useState<FetchResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
   const loadStatus = useCallback(async () => {
     if (!project) {
       setStatus(null)
+      setFetchStatus(null)
       return
     }
     try {
-      const s = await getStockCodesStatus(project.path)
+      const [s, f] = await Promise.all([
+        getStockCodesStatus(project.path),
+        getStockSyncStatus(project.path),
+      ])
       setStatus(s)
+      setFetchStatus(f)
     } catch (err) {
       console.warn("[PgConfig] load status failed:", err)
     }
@@ -835,6 +1306,11 @@ function PgConfigSection() {
     setUser(pgConfig.user)
     setPassword(pgConfig.password)
     setDatabase(pgConfig.database)
+    setTableName(pgConfig.table_name ?? "")
+    setColTicker(pgConfig.col_ticker ?? "")
+    setColStockName(pgConfig.col_stock_name ?? "")
+    setHasDateColumn(pgConfig.has_date_column ?? true)
+    setMairuiLicence(pgConfig.mairui_api_licence ?? "")
   }, [pgConfig])
 
   useEffect(() => {
@@ -849,11 +1325,27 @@ function PgConfigSection() {
       user: user.trim(),
       password,
       database: database.trim(),
+      table_name: tableName.trim() || undefined,
+      col_ticker: colTicker.trim() || undefined,
+      col_stock_name: colStockName.trim() || undefined,
+      has_date_column: hasDateColumn,
+      mairui_api_licence: mairuiLicence.trim() || undefined,
     }
   }
 
   function isComplete(cfg: PgConfig): boolean {
     return !!(cfg.host && cfg.port && cfg.user && cfg.password && cfg.database)
+  }
+
+  function isFetchReady(cfg: PgConfig): boolean {
+    return isComplete(cfg) && !!cfg.table_name && !!cfg.col_ticker && !!cfg.col_stock_name
+  }
+
+  function isFetchedToday(fetchStatus: FetchResult | null): boolean {
+    if (!fetchStatus?.fetched_at) return false
+    const fetchedDate = fetchStatus.fetched_at.slice(0, 10)
+    const today = new Date().toISOString().slice(0, 10)
+    return fetchedDate === today
   }
 
   async function handleSave() {
@@ -894,16 +1386,85 @@ function PgConfigSection() {
     }
   }
 
+  async function handleUpdateStockCodes() {
+    if (!project) {
+      setError("请先打开一个项目")
+      return
+    }
+    const cfg = currentConfig()
+    if (!isFetchReady(cfg)) {
+      setError("PG 配置不完整：需填写 Host/Port/Database/User/Password/表名/代码字段/名称字段")
+      return
+    }
+    setError(null)
+    setFetching(true)
+    try {
+      // Persist current config before fetch
+      setPgConfig(cfg)
+      await savePgConfig(cfg)
+      const result = await updateStockCodes(project.path, cfg)
+      setFetchStatus(result)
+      // 更新 PG 后必须刷新本地缓存文件，否则 lookup_stock_code 仍读旧缓存
+      // 导致“DB 中查不到股票代码”的误报
+      const syncResult = await syncStockCodes(project.path, cfg, true)
+      setStatus(syncResult)
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err))
+    } finally {
+      setFetching(false)
+    }
+  }
+
   return (
     <div className="space-y-4 rounded-lg border p-4">
       <h3 className="font-semibold">PostgreSQL 股票代码源</h3>
       <p className="text-xs text-muted-foreground">
-        Save to Wiki 写股票页时，由此处的 DB 覆写 code 字段（防止 LLM 瞎编）。表：cn_stock_name_wind。
+        Save to Wiki 写股票页时，由此处的 DB 覆写 code 字段（防止 LLM 瞎编）。使用前请配置下方表名与字段，并填写麦蕊 API licence 以从上游更新股票数据。
       </p>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label htmlFor="pgHost">Host</Label>
+          <Label htmlFor="pgTableName">表名</Label>
+          <Input
+            id="pgTableName"
+            value={tableName}
+            onChange={(e) => setTableName(e.target.value)}
+            placeholder="public.stocks"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="pgColTicker">股票代码字段</Label>
+          <Input
+            id="pgColTicker"
+            value={colTicker}
+            onChange={(e) => setColTicker(e.target.value)}
+            placeholder="stock_code"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="pgColStockName">股票名称字段</Label>
+          <Input
+            id="pgColStockName"
+            value={colStockName}
+            onChange={(e) => setColStockName(e.target.value)}
+            placeholder="stock_name"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="pgHasDateColumn">含 date 列</Label>
+          <div className="flex items-center gap-2">
+            <input
+              id="pgHasDateColumn"
+              type="checkbox"
+              className="size-4"
+              checked={hasDateColumn}
+              onChange={(e) => setHasDateColumn(e.target.checked)}
+            />
+            <span className="text-xs text-muted-foreground">用于 DISTINCT ON ... ORDER BY date DESC</span>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="pgHost">主机</Label>
           <Input
             id="pgHost"
             value={host}
@@ -912,7 +1473,7 @@ function PgConfigSection() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pgPort">Port</Label>
+          <Label htmlFor="pgPort">端口</Label>
           <Input
             id="pgPort"
             type="number"
@@ -922,7 +1483,7 @@ function PgConfigSection() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pgDatabase">Database</Label>
+          <Label htmlFor="pgDatabase">数据库</Label>
           <Input
             id="pgDatabase"
             value={database}
@@ -931,7 +1492,7 @@ function PgConfigSection() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pgUser">User</Label>
+          <Label htmlFor="pgUser">用户名</Label>
           <Input
             id="pgUser"
             value={user}
@@ -940,7 +1501,7 @@ function PgConfigSection() {
           />
         </div>
         <div className="col-span-2 space-y-1.5">
-          <Label htmlFor="pgPassword">Password</Label>
+          <Label htmlFor="pgPassword">密码</Label>
           <div className="relative">
             <Input
               id="pgPassword"
@@ -958,6 +1519,28 @@ function PgConfigSection() {
               tabIndex={-1}
             >
               {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            </button>
+          </div>
+        </div>
+        <div className="col-span-2 space-y-1.5">
+          <Label htmlFor="mairuiLicence">麦蕊 API Licence</Label>
+          <div className="relative">
+            <Input
+              id="mairuiLicence"
+              type={showLicence ? "text" : "password"}
+              value={mairuiLicence}
+              onChange={(e) => setMairuiLicence(e.target.value)}
+              className="pr-9 font-mono"
+              placeholder="麦蕊 licence（用于「更新库中股票数据」）"
+            />
+            <button
+              type="button"
+              onClick={() => setShowLicence((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label={showLicence ? "隐藏 Licence" : "显示 Licence"}
+              tabIndex={-1}
+            >
+              {showLicence ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </button>
           </div>
         </div>
@@ -981,6 +1564,30 @@ function PgConfigSection() {
             "立即刷新股票代码库"
           )}
         </Button>
+        {project && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleUpdateStockCodes}
+            disabled={fetching || !isFetchReady(currentConfig())}
+            title={
+              isFetchedToday(fetchStatus)
+                ? `今日已更新过（${fetchStatus?.fetched_at ?? ""}），点击可强制重新拉取最新股票数据并覆盖 PG 表`
+                : "沪深A股直连麦蕊、北交所用北交所官方源，合并后 upsert 到上方配置的 PG 表"
+            }
+          >
+            {fetching ? (
+              <>
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                更新中…
+              </>
+            ) : isFetchedToday(fetchStatus) ? (
+              "强制更新股票数据"
+            ) : (
+              "更新库中股票数据"
+            )}
+          </Button>
+        )}
       </div>
 
       {error && (
@@ -989,6 +1596,11 @@ function PgConfigSection() {
       {status && (
         <p className="text-xs text-muted-foreground">
           上次同步：{status.synced_at} · 共 {status.count} 条
+        </p>
+      )}
+      {fetchStatus && (
+        <p className="text-xs text-muted-foreground">
+          上次抓取：{fetchStatus.fetched_at} · 共 {fetchStatus.count} 条 · 新增 {fetchStatus.inserted} 条 · 更新 {fetchStatus.updated} 条
         </p>
       )}
       {!status && !error && (

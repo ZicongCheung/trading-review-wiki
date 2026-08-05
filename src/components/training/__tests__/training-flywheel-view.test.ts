@@ -280,7 +280,6 @@ describe("paperTradeAgentDetail", () => {
   it("summarizes the V2 agent candidate queue without treating it as real profit", () => {
     const detail = paperTradeAgentDetail({
       schema: "stock-feedback-paper-trade-agent-summary-v1",
-      strategy: "self_question_hypothesis_evidence_to_dual_track_paper_trade_candidate_v1",
       counts: {
         total: 4,
         ruleBaseline: 2,
@@ -835,14 +834,8 @@ describe("buildReviewBacklogGateSummary", () => {
       },
       pendingRefreshes: [
         {
-          headline: "已记录人工分流",
-          detail: "标记 priced-in 已记录",
-          action: "mark_priced_in",
           actionLabel: "标记 priced-in",
-          resultLabel: "priced_in",
-          nextStep: "下一步：重建轨迹并刷新 LoRA-ready。",
           refreshLabel: "重建并刷新 LoRA-ready",
-          tone: "warn",
         },
       ],
     })
@@ -933,7 +926,7 @@ describe("buildReviewBacklogGateSummary", () => {
         detail: "模拟收益支持手法，但只允许低权重进入 adapter 候选",
         actionLabel: "人审 paper adapter 正样本",
         tone: "warn",
-        source: "paper_trade",
+        source: "pending_review",
       },
     })
 
@@ -1032,13 +1025,13 @@ describe("review action filters", () => {
       { id: "reviewed" },
     ]
     const reviewByTrajectory = new Map([
-      ["risk", { sourceTrajectoryId: "risk", recommendedAction: "route_to_preference", reviewStatus: "pending" }],
-      ["priced", { sourceTrajectoryId: "priced", recommendedAction: "mark_priced_in", reviewStatus: "pending" }],
-      ["entry", { sourceTrajectoryId: "entry", humanActionPlan: { recommendedAction: "mark_entry_wrong" }, reviewStatus: "pending" }],
-      ["evidence", { sourceTrajectoryId: "evidence", recommendedAction: "needs_evidence", reviewStatus: "pending" }],
-      ["adapter", { sourceTrajectoryId: "adapter", recommendedAction: "approve_for_adapter", reviewStatus: "pending" }],
-      ["paper", { sourceTrajectoryId: "paper", recommendedAction: "approve_paper_adapter_candidate", reviewStatus: "pending" }],
-      ["reviewed", { sourceTrajectoryId: "reviewed", recommendedAction: "route_to_preference", reviewStatus: "reviewed" }],
+      ["risk", { sourceTrajectoryId: "risk", recommendedAction: "route_to_preference", reviewStatus: "pending" as const }],
+      ["priced", { sourceTrajectoryId: "priced", recommendedAction: "mark_priced_in", reviewStatus: "pending" as const }],
+      ["entry", { sourceTrajectoryId: "entry", humanActionPlan: { recommendedAction: "mark_entry_wrong" }, reviewStatus: "pending" as const }],
+      ["evidence", { sourceTrajectoryId: "evidence", recommendedAction: "needs_evidence", reviewStatus: "pending" as const }],
+      ["adapter", { sourceTrajectoryId: "adapter", recommendedAction: "approve_for_adapter", reviewStatus: "pending" as const }],
+      ["paper", { sourceTrajectoryId: "paper", recommendedAction: "approve_paper_adapter_candidate", reviewStatus: "pending" as const }],
+      ["reviewed", { sourceTrajectoryId: "reviewed", recommendedAction: "route_to_preference", reviewStatus: "reviewed" as const }],
     ])
 
     expect(filterTrajectoriesByReviewAction(trajectories, reviewByTrajectory, "all").map((item) => item.id)).toEqual([
@@ -1090,10 +1083,10 @@ describe("review action filters", () => {
       },
     ]
     const reviewByTrajectory = new Map([
-      ["risk", { sourceTrajectoryId: "risk", recommendedAction: "route_to_preference", reviewStatus: "pending" }],
-      ["priced", { sourceTrajectoryId: "priced", recommendedAction: "mark_priced_in", reviewStatus: "pending" }],
-      ["entry", { sourceTrajectoryId: "entry", humanActionPlan: { recommendedAction: "mark_entry_wrong" }, reviewStatus: "pending" }],
-      ["evidence", { sourceTrajectoryId: "evidence", recommendedAction: "needs_evidence", reviewStatus: "pending" }],
+      ["risk", { sourceTrajectoryId: "risk", recommendedAction: "route_to_preference", reviewStatus: "pending" as const }],
+      ["priced", { sourceTrajectoryId: "priced", recommendedAction: "mark_priced_in", reviewStatus: "pending" as const }],
+      ["entry", { sourceTrajectoryId: "entry", humanActionPlan: { recommendedAction: "mark_entry_wrong" }, reviewStatus: "pending" as const }],
+      ["evidence", { sourceTrajectoryId: "evidence", recommendedAction: "needs_evidence", reviewStatus: "pending" as const }],
     ])
 
     const preview = buildReviewActionBatchPreview(trajectories, reviewByTrajectory, "route_to_preference", { limit: 2 })
@@ -1122,7 +1115,7 @@ describe("review action filters", () => {
   it("does not show a batch preview without an active bucket or matching pending reviews", () => {
     const trajectories = [{ id: "reviewed", hypothesis: "已处理" }]
     const reviewByTrajectory = new Map([
-      ["reviewed", { sourceTrajectoryId: "reviewed", recommendedAction: "approve_for_adapter", reviewStatus: "reviewed" }],
+      ["reviewed", { sourceTrajectoryId: "reviewed", recommendedAction: "approve_for_adapter", reviewStatus: "reviewed" as const }],
     ])
 
     expect(buildReviewActionBatchPreview(trajectories, reviewByTrajectory, "all")).toBeNull()
@@ -1136,9 +1129,9 @@ describe("review action filters", () => {
       { id: "evidence", hypothesis: "等待补证", validationTarget: "expectation_trade", qualityGate: { status: "needs_evidence" } },
     ]
     const reviewByTrajectory = new Map([
-      ["risk", { sourceTrajectoryId: "risk", recommendedAction: "route_to_preference", reviewStatus: "pending" }],
-      ["priced", { sourceTrajectoryId: "priced", recommendedAction: "mark_priced_in", reviewStatus: "reviewed" }],
-      ["evidence", { sourceTrajectoryId: "evidence", recommendedAction: "needs_evidence", reviewStatus: "pending" }],
+      ["risk", { sourceTrajectoryId: "risk", recommendedAction: "route_to_preference", reviewStatus: "pending" as const }],
+      ["priced", { sourceTrajectoryId: "priced", recommendedAction: "mark_priced_in", reviewStatus: "reviewed" as const }],
+      ["evidence", { sourceTrajectoryId: "evidence", recommendedAction: "needs_evidence", reviewStatus: "pending" as const }],
     ])
 
     const context = buildReviewBucketContext(trajectories, reviewByTrajectory, "route_to_preference", "risk")
@@ -1562,7 +1555,6 @@ describe("paper trade record form helpers", () => {
   it("summarizes expected and actual market evidence windows for preflight review", () => {
     const planned = buildPaperTradeEvidenceWindow({
       ...baseDraft,
-      status: "open",
       exitDate: "",
       entryDate: "2024-06-03",
       marketEvidenceEndDate: "",
@@ -1921,9 +1913,7 @@ describe("Tushare data source probe helpers", () => {
 
   it("builds a reusable patch for applying Tushare entry price suggestions", () => {
     expect(buildPaperTradeEntryPriceSuggestionPatch({
-      entryPrice: "",
       priceSqlRef: "",
-      marketEvidenceProvider: "stock_daily_sql",
       marketEvidenceSource: "",
     }, {
       label: "收盘价 10.8",
@@ -3932,15 +3922,15 @@ describe("profit feedback distillation hints", () => {
       activeStepId: "rebuild_trajectory",
       tone: "good",
     })
-    expect(roadmap.steps.map((step) => [step.id, step.status])).toEqual([
+    expect(roadmap?.steps.map((step) => [step.id, step.status])).toEqual([
       ["record_result", "done"],
       ["resolve_evidence", "done"],
       ["rebuild_trajectory", "active"],
       ["human_review", "pending"],
       ["refresh_artifacts", "pending"],
     ])
-    expect(roadmap.steps.at(-1)?.detail).toContain("LoRA-ready")
-    expect(roadmap.steps.at(-1)?.detail).toContain("不带原始事实")
+    expect(roadmap?.steps.at(-1)?.detail).toContain("LoRA-ready")
+    expect(roadmap?.steps.at(-1)?.detail).toContain("不带原始事实")
   })
 
   it("previews human review routing for confirmed profit-supported collection results", () => {
@@ -4061,15 +4051,15 @@ describe("profit feedback distillation hints", () => {
       headline: "回流路线图：刷新训练产物",
       activeStepId: "refresh_artifacts",
     })
-    expect(roadmap.steps.map((step) => [step.id, step.status])).toEqual([
+    expect(roadmap?.steps.map((step) => [step.id, step.status])).toEqual([
       ["record_result", "done"],
       ["resolve_evidence", "done"],
       ["rebuild_trajectory", "done"],
       ["human_review", "done"],
       ["refresh_artifacts", "active"],
     ])
-    expect(roadmap.steps.find((step) => step.id === "human_review")?.detail).toContain("Benchmark 已覆盖")
-    expect(roadmap.steps.find((step) => step.id === "rebuild_trajectory")?.action).toMatchObject({
+    expect(roadmap?.steps.find((step) => step.id === "human_review")?.detail).toContain("Benchmark 已覆盖")
+    expect(roadmap?.steps.find((step) => step.id === "rebuild_trajectory")?.action).toMatchObject({
       label: "定位轨迹",
       auditContext: {
         sourceTitle: "补样本回流轨迹",
@@ -4077,7 +4067,7 @@ describe("profit feedback distillation hints", () => {
         collectionResultId: "stockfb_collection_result_entry_risk_1",
       },
     })
-    expect(roadmap.steps.find((step) => step.id === "human_review")?.action).toMatchObject({
+    expect(roadmap?.steps.find((step) => step.id === "human_review")?.action).toMatchObject({
       label: "定位 Benchmark",
       auditContext: {
         sourceTitle: "Benchmark 来源",
@@ -4313,15 +4303,15 @@ describe("profit feedback distillation hints", () => {
       headline: "回流路线图：训练产物已覆盖",
       activeStepId: "refresh_artifacts",
     })
-    expect(roadmap.steps.map((step) => [step.id, step.status])).toEqual([
+    expect(roadmap?.steps.map((step) => [step.id, step.status])).toEqual([
       ["record_result", "done"],
       ["resolve_evidence", "done"],
       ["rebuild_trajectory", "done"],
       ["human_review", "done"],
       ["refresh_artifacts", "done"],
     ])
-    expect(roadmap.steps.at(-1)?.detail).toContain("LoRA-ready 已覆盖")
-    expect(roadmap.steps.find((step) => step.id === "refresh_artifacts")?.action).toMatchObject({
+    expect(roadmap?.steps.at(-1)?.detail).toContain("LoRA-ready 已覆盖")
+    expect(roadmap?.steps.find((step) => step.id === "refresh_artifacts")?.action).toMatchObject({
       label: "定位 LoRA-ready",
       auditContext: {
         sourceTitle: "LoRA-ready 来源",
@@ -4468,14 +4458,14 @@ describe("profit feedback distillation hints", () => {
       activeStepId: "resolve_evidence",
       tone: "warn",
     })
-    expect(roadmap.steps.map((step) => [step.id, step.status])).toEqual([
+    expect(roadmap?.steps.map((step) => [step.id, step.status])).toEqual([
       ["record_result", "done"],
       ["resolve_evidence", "active"],
       ["rebuild_trajectory", "blocked"],
       ["human_review", "blocked"],
       ["refresh_artifacts", "blocked"],
     ])
-    expect(roadmap.steps.at(-1)?.detail).toContain("不得刷新训练权重")
+    expect(roadmap?.steps.at(-1)?.detail).toContain("不得刷新训练权重")
   })
 
   it("routes refuted collection results toward negative benchmark review", () => {
@@ -4517,14 +4507,14 @@ describe("profit feedback distillation hints", () => {
       activeStepId: "human_review",
       tone: "danger",
     })
-    expect(roadmap.steps.map((step) => [step.id, step.status])).toEqual([
+    expect(roadmap?.steps.map((step) => [step.id, step.status])).toEqual([
       ["record_result", "done"],
       ["resolve_evidence", "done"],
       ["rebuild_trajectory", "pending"],
       ["human_review", "active"],
       ["refresh_artifacts", "blocked"],
     ])
-    expect(roadmap.steps.at(-1)?.detail).toContain("不进入正向 adapter")
+    expect(roadmap?.steps.at(-1)?.detail).toContain("不进入正向 adapter")
   })
 
   it("reconstructs collection context from persisted recent collection results", () => {
@@ -4690,10 +4680,10 @@ describe("profit feedback distillation hints", () => {
       { id: "unknown", profitFeedback: { outcome: "unknown" } },
     ]
     const reviewByTrajectory = new Map([
-      ["win", { sourceTrajectoryId: "win", recommendedAction: "approve_for_adapter", reviewStatus: "pending" }],
-      ["loss", { sourceTrajectoryId: "loss", recommendedAction: "route_to_preference", reviewStatus: "pending" }],
-      ["entry-risk", { sourceTrajectoryId: "entry-risk", humanActionPlan: { recommendedAction: "mark_entry_wrong" }, reviewStatus: "reviewed" }],
-      ["pending", { sourceTrajectoryId: "pending", recommendedAction: "route_to_eval", reviewStatus: "pending" }],
+      ["win", { sourceTrajectoryId: "win", recommendedAction: "approve_for_adapter", reviewStatus: "pending" as const }],
+      ["loss", { sourceTrajectoryId: "loss", recommendedAction: "route_to_preference", reviewStatus: "pending" as const }],
+      ["entry-risk", { sourceTrajectoryId: "entry-risk", humanActionPlan: { recommendedAction: "mark_entry_wrong" }, reviewStatus: "reviewed" as const }],
+      ["pending", { sourceTrajectoryId: "pending", recommendedAction: "route_to_eval", reviewStatus: "pending" as const }],
     ])
 
     const worklist = buildProfitFeedbackReviewWorklist(trajectories, reviewByTrajectory)

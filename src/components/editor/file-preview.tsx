@@ -58,7 +58,7 @@ function useBlobUrl(filePath: string): string | null {
     readFileBinary(filePath)
       .then((data) => {
         if (cancelled) return
-        const blob = new Blob([data])
+        const blob = new Blob([data as BlobPart])
         objectUrl = URL.createObjectURL(blob)
         setUrl(objectUrl)
       })

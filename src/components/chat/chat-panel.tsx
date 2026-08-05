@@ -5,15 +5,14 @@ import { ChatMessage, StreamingMessage, useSourceFiles } from "./chat-message"
 import { ChatInput } from "./chat-input"
 import { useChatStore, chatMessagesToLLM } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
-import { streamChat, type ChatMessage as LLMMessage } from "@/lib/llm-client"
+import { streamChat, compactConversation, type ChatMessage as LLMMessage } from "@/lib/llm-client"
 import { executeIngestWrites } from "@/lib/ingest"
-import { listDirectory, readFile, writeFile, deleteFile, writeBinaryFile, createDirectory } from "@/commands/fs"
+import { listDirectory, readFile, deleteFile, writeBinaryFile, createDirectory } from "@/commands/fs"
 import { searchWiki } from "@/lib/search"
 import { buildRetrievalGraph, getRelatedNodes } from "@/lib/graph-relevance"
-import { useReviewStore } from "@/stores/review-store"
-import type { FileNode } from "@/types/wiki"
 import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
-import { detectLanguage } from "@/lib/detect-language"
+import { buildChatSystemPrompt, buildChatUserContextBlock } from "@/lib/chat-prompts"
+import { invoke } from "@tauri-apps/api/core"
 
 // lastQueryPages is now stored in chat-store to avoid module-level mutable state issues
 
@@ -145,6 +144,115 @@ export function ChatPanel() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  // When enabled, route the question through the CLI's multi-source `ask`
+  // (wiki/raw/graph/facts/brain) instead of the local TS retrieval path.
+  const [cliMultiSource, setCliMultiSource] = useState(false)
+  // Agentic mode (--agentic) — multi-step sub-agent orchestration
+  const [agentic, setAgentic] = useState(false)
+  // Candidate precheck result (show-sources + show-context returns candidates JSON, not answer)
+  const [precheckResult, setPrecheckResult] = useState<string | null>(null)
+
+  const runCliAsk = useCallback(
+    async (text: string, pp: string) => {
+      try {
+        const cfg = useWikiStore.getState().llmConfig
+        const provider = cfg.provider === "codex" ? "codex" : "openai"
+        const args = [
+          "--query", text,
+          "--sources", "wiki,raw,graph,facts,brain",
+          "--source-k", "3",
+          "--provider", provider,
+          "--api-key", cfg.apiKey ?? "",
+          "--endpoint", cfg.customEndpoint ?? "",
+          "--model", cfg.model ?? "",
+        ]
+        if (agentic) args.push("--agentic")
+        // Rust 网关返回 stdout 字符串；ask 不带 --show-* 时为纯文本答案（含内联 [W#]/[R#] 引用 + 末尾「引用来源」列表）
+        const raw = (await invoke<string>("run_research_cockpit_command", {
+          projectPath: pp,
+          action: "ask",
+          args,
+        })) as unknown as string
+
+        const refs: { title: string; path: string }[] = []
+        let content = raw
+        const refSection = raw.match(/##\s*引用来源\s*\n([\s\S]*?)(?:\n##\s|$)/)
+        if (refSection) {
+          const body = refSection[1]
+          const lineRe = /^\s*-\s*\[([WRGFMS])(\d+)\]\s+(.+?)\s*(?:（graph_hop=\d+）)?\s*$/gm
+          let m: RegExpExecArray | null
+          while ((m = lineRe.exec(body))) {
+            const [, prefix, num, rest] = m
+            const cleanPath = rest.trim()
+            const base = cleanPath.replace(/^wiki\//, "").replace(/\.md$/, "")
+            const name = base.split("/").pop() || base
+            refs.push({ title: `[${prefix}${num}] ${name}`, path: cleanPath })
+          }
+          if (refs.length > 0) {
+            // 已解析出结构化引用，从展示正文剥离「引用来源」段避免重复
+            content = raw.replace(/##\s*引用来源[\s\S]*$/, "").trim()
+          }
+        }
+        finalizeStream(content || "(无回答)", refs)
+      } catch (err: any) {
+        finalizeStream(`CLI 多源检索失败：${err?.message ?? String(err)}`, [])
+      }
+    },
+    [finalizeStream, agentic],
+  )
+
+  // 候选预检：通过 candidate-ask-precheck Rust arm 调用 ask --show-sources --show-context --agentic，返回 JSON 候选上下文而非最终答案
+  const runCandidatePrecheck = useCallback(async () => {
+    if (!project) return
+    // Get the last user message as the query
+    const lastUserMsg = [...useChatStore.getState().messages].reverse().find((m) => m.role === "user")
+    const query = lastUserMsg?.content?.trim() ?? ""
+    if (!query) return
+    try {
+      const args = [
+        "--query", query,
+        "--sources", "wiki,raw,graph,facts,brain",
+        "--source-k", "3",
+      ]
+      // candidate-ask-precheck arm auto-adds --agentic --show-context --show-sources --profile local-max --no-agent-artifacts
+      const raw = await invoke<string>("run_research_cockpit_command", {
+        projectPath: project.path,
+        action: "candidate-ask-precheck",
+        args,
+      })
+      // raw is JSON string (compact or full)
+      try {
+        const parsed = JSON.parse(raw)
+        // Summarize: count sources by type
+        const counts: Record<string, number> = {}
+        const collect = (arr: any[] | undefined) => {
+          if (!arr) return
+          for (const item of arr) {
+            const kind = item.kind || item.type || "unknown"
+            counts[kind] = (counts[kind] ?? 0) + 1
+          }
+        }
+        collect(parsed.sources)
+        collect(parsed.wikiMatches)
+        collect(parsed.rawMatches)
+        collect(parsed.factsMatches)
+        collect(parsed.graphMatches)
+        const summary = {
+          schema: parsed.schema,
+          query: parsed.query,
+          generatedAt: parsed.generatedAt,
+          counts,
+          sampleTitles: (parsed.sources ?? []).slice(0, 8).map((s: any) => s.title || s.path || JSON.stringify(s).slice(0, 60)),
+        }
+        setPrecheckResult(JSON.stringify(summary, null, 2))
+      } catch {
+        setPrecheckResult(raw.slice(0, 4000))
+      }
+    } catch (err: any) {
+      setPrecheckResult(`预检失败：${err?.message ?? String(err)}`)
+    }
+  }, [project])
+
   // Auto-scroll to bottom when messages change or streaming content updates
   // Only scroll if user is already near the bottom to avoid interrupting history reading
   useEffect(() => {
@@ -197,9 +305,22 @@ export function ChatPanel() {
       addMessage("user", messageText)
       setStreaming(true)
 
-      // Build system prompt with wiki context using graph-enhanced retrieval
-      const systemMessages: LLMMessage[] = []
+      // CLI multi-source retrieval path (wiki/raw/graph/facts/brain via Codex CLI).
+      // Skips the local TS retrieval + streamChat and uses the knowledge base's
+      // own six-source RAG instead.
+      if (cliMultiSource && project && llmConfig) {
+        await runCliAsk(messageText, normalizePath(project.path))
+        return
+      }
+
+      // Frozen, byte-identical system prompt — cache-stable prefix (DeepSeek APC).
+      // All per-query context (retrieved wiki pages, project purpose/index) is injected
+      // into the USER message instead, so the prefix never changes between queries.
+      const systemMessages: LLMMessage[] = [
+        { role: "system", content: buildChatSystemPrompt() },
+      ]
       let queryRefs: { title: string; path: string }[] = []
+      let chatContextBlock = ""
       if (project) {
         const pp = normalizePath(project.path)
         const dataVersion = useWikiStore.getState().dataVersion
@@ -321,34 +442,12 @@ export function ChatPanel() {
           `[${i + 1}] ${p.title} (${p.path})`
         ).join("\n")
 
-        systemMessages.push({
-          role: "system",
-          content: [
-            "你是一位专业的交易复盘助手。基于下面提供的交易知识库内容回答问题。你的职责是帮助用户从交易记录中提炼模式、发现矛盾、评估策略有效性，并推动交易理解的复利增长。",
-            "",
-            `## CRITICAL: Response Language`,
-            `用户正在使用 **${detectLanguage(text)}** 书写。无论知识库内容的语言是什么，你都必须使用 **${detectLanguage(text)}** 回复。这是强制要求。`,
-            "",
-            "## 规则",
-            "- 仅基于下面提供的编号 Wiki 页面进行回答。",
-            "- 如果提供的页面信息不足，请诚实地说明。",
-            "- 使用 [[wikilink]] 语法引用 Wiki 页面。",
-            "- 引用信息时，使用方括号中的页码，例如 [1]、[2]。",
-            "- 在回复的最末尾，添加一个隐藏注释，列出你使用的页码：",
-            "  <!-- cited: 1, 3, 5 -->",
-            "",
-            "## 保存到 Wiki",
-            "- 你虽然不能直接写磁盘，但用户界面上每条你的回复旁边都有一个【Save to Wiki】按钮。",
-            "- 当用户要求你'写入'、'保存'、'生成反思'时，你应该直接输出完整的 markdown 内容，并告诉用户：'点击消息右下角的 Save to Wiki 按钮即可保存到知识库。'",
-            "- 如果你认为当前回复值得长期沉淀，可以在隐藏注释后追加：<!-- save-worthy: yes | 理由 -->",
-            "",
-            "使用 markdown 格式提高可读性。",
-            "",
-            purpose ? `## Wiki Purpose\n${purpose}` : "",
-            index ? `## Wiki Index\n${index}` : "",
-            relevantPages.length > 0 ? `## Page List\n${pageList}` : "",
-            `## Wiki Pages\n\n${pagesContext}`,
-          ].filter(Boolean).join("\n"),
+        // Variable, per-query context → user message (keeps the system prefix frozen).
+        chatContextBlock = buildChatUserContextBlock({
+          purpose: purpose || undefined,
+          index: index || undefined,
+          pageList: relevantPages.length > 0 ? pageList : undefined,
+          pagesContext: relevantPages.length > 0 ? pagesContext : undefined,
         })
 
         const mappedPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
@@ -363,6 +462,22 @@ export function ChatPanel() {
         .slice(-maxHistoryMessages)
 
       const llmMessages = [...systemMessages, ...chatMessagesToLLM(activeConvMessages)]
+      // Append the per-query wiki context to the LAST user turn only. Keeping it out of the
+      // system prompt preserves the cache-stable prefix; the variable tail never invalidates
+      // the cached system + earlier-history prefix.
+      if (chatContextBlock) {
+        const lastIdx = llmMessages.length - 1
+        const last = llmMessages[lastIdx]
+        if (last && last.role === "user") {
+          llmMessages[lastIdx] = { ...last, content: `${last.content}\n\n---\n\n${chatContextBlock}` }
+        }
+      }
+
+      // R2: prefix-preserving auto-compaction for long chat sessions.
+      // Chat history grows across turns; once it exceeds the round threshold, fold the oldest
+      // rounds into a single summary user message (frozen system prefix untouched) so the
+      // DeepSeek prefix cache stays warm AND the context window stays bounded.
+      const compactedMessages = compactConversation(llmMessages, { keepRecentRounds: 6 })
 
       const controller = new AbortController()
       abortRef.current = controller
@@ -371,7 +486,7 @@ export function ChatPanel() {
 
       await streamChat(
         llmConfig,
-        llmMessages,
+        compactedMessages,
         {
           onToken: (token) => {
             accumulated += token
@@ -390,7 +505,7 @@ export function ChatPanel() {
         controller.signal,
       )
     },
-    [llmConfig, addMessage, setStreaming, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages, project],
+    [llmConfig, addMessage, setStreaming, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages, project, cliMultiSource, runCliAsk],
   )
 
   const handleStop = useCallback(() => {
@@ -449,8 +564,8 @@ export function ChatPanel() {
           <div className="flex flex-1 items-center justify-center text-muted-foreground">
             <div className="text-center">
               <MessageSquare className="mx-auto mb-3 h-8 w-8 opacity-30" />
-              <p className="text-sm">Start a new conversation</p>
-              <p className="mt-1 text-xs opacity-60">Click "New Chat" to begin</p>
+              <p className="text-sm">开始新对话</p>
+              <p className="mt-1 text-xs opacity-60">点击“新对话”开始</p>
             </div>
           </div>
         ) : (
@@ -494,6 +609,62 @@ export function ChatPanel() {
           </>
         )}
 
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5 text-xs text-muted-foreground">
+          <label className="flex cursor-pointer items-center gap-1.5 select-none">
+            <input
+              type="checkbox"
+              id="cli-multisource"
+              checked={cliMultiSource}
+              onChange={(e) => setCliMultiSource(e.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            <span>CLI 多源检索（ask · wiki/raw/graph/facts/brain）</span>
+          </label>
+          {cliMultiSource && (
+            <>
+              <label className="flex cursor-pointer items-center gap-1.5 select-none">
+                <input
+                  type="checkbox"
+                  id="agentic-mode"
+                  checked={agentic}
+                  onChange={(e) => setAgentic(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                <span>智能体模式 (--agentic，多步子代理)</span>
+              </label>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={runCandidatePrecheck}
+                disabled={!project}
+                title="通过 candidate-ask-precheck 调用 ask --agentic --show-sources --show-context，返回候选上下文而非最终答案"
+              >
+                候选预检
+              </Button>
+            </>
+          )}
+        </div>
+
+        {precheckResult && (
+          <div className="border-t bg-muted/30 px-3 py-2 text-xs">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="font-medium text-foreground">候选预检结果</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 px-1 text-[10px]"
+                onClick={() => setPrecheckResult(null)}
+              >
+                关闭
+              </Button>
+            </div>
+            <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded bg-background p-2 text-[11px] leading-relaxed">
+              {precheckResult}
+            </pre>
+          </div>
+        )}
+
         <ChatInput
           onSend={handleSend}
           onStop={handleStop}
@@ -509,68 +680,5 @@ export function ChatPanel() {
   )
 }
 
-/**
- * Check if the LLM marked its response as save-worthy.
- * If so, add a review item prompting the user to save it.
- */
-function checkSaveWorthy(response: string, question: string) {
-  const match = response.match(/<!--\s*save-worthy:\s*yes\s*\|\s*(.+?)\s*-->/)
-  if (!match) return
+// __DEAD_CODE_MARKER_DO_NOT_REMOVE__
 
-  const reason = match[1]
-  const firstLine = response.split("\n").find((l) => l.trim() && !l.startsWith("<!--"))?.replace(/^#+\s*/, "").trim() ?? "Chat answer"
-  const title = firstLine.slice(0, 60)
-
-  const contentToSave = response
-  const questionText = question
-
-  useReviewStore.getState().addItem({
-    type: "suggestion",
-    title: `Save to Wiki: ${title}`,
-    description: `${reason}\n\nQuestion: "${questionText.slice(0, 100)}${questionText.length > 100 ? "..." : ""}"`,
-    options: [
-      { label: "Save to Wiki", action: `save:${encodeContent(contentToSave)}` },
-      { label: "Skip", action: "Skip" },
-    ],
-  })
-}
-
-function encodeContent(text: string): string {
-  return btoa(encodeURIComponent(text))
-}
-
-function flattenFileNames(nodes: FileNode[]): string[] {
-  const names: string[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      names.push(...flattenFileNames(node.children))
-    } else if (!node.is_dir) {
-      names.push(node.name)
-    }
-  }
-  return names
-}
-
-function flattenMdFiles(nodes: FileNode[]): FileNode[] {
-  const files: FileNode[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      files.push(...flattenMdFiles(node.children))
-    } else if (!node.is_dir && node.name.endsWith(".md")) {
-      files.push(node)
-    }
-  }
-  return files
-}
-
-function flattenAllFiles(nodes: FileNode[]): FileNode[] {
-  const files: FileNode[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      files.push(...flattenAllFiles(node.children))
-    } else if (!node.is_dir) {
-      files.push(node)
-    }
-  }
-  return files
-}

@@ -22,6 +22,7 @@ interface ResearchState {
   addTask: (topic: string) => string
   updateTask: (id: string, updates: Partial<ResearchTask>) => void
   removeTask: (id: string) => void
+  clearTasks: () => void
   setPanelOpen: (open: boolean) => void
   getRunningCount: () => number
   getNextQueued: () => ResearchTask | undefined

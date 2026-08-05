@@ -53,6 +53,14 @@ import {
   excerptForPrompt,
 } from "./knowledge.mjs"
 
+import {
+  collectFreeQuoteEvidence,
+  mergeFreeQuoteIntoFinancials,
+  mergeFreeQuoteCompanyPatch,
+} from "./company-free-quote.mjs"
+
+import { writeCompanyResearchCompound } from "./compound-feedback.mjs"
+
 export const DEFAULT_COMPANY_PROVIDER_TIMEOUT_MS = 45000
 
 export function companyProviderStageTimeoutMs(options = {}, stage, fallback = DEFAULT_COMPANY_PROVIDER_TIMEOUT_MS) {
@@ -1044,7 +1052,7 @@ export function buildFinancialsFromTushare(tushareEvidence) {
   }
 }
 
-export function buildEvidenceLedger({ company, cninfo, downloads, tushare, tavily, wikiContext, generatedAt }) {
+export function buildEvidenceLedger({ company, cninfo, downloads, tushare, tavily, wikiContext, generatedAt, freeQuote }) {
   const rows = []
   rows.push({
     dataItem: `${company.stockName ?? company.stockInput} CNINFO announcement search`,
@@ -1078,6 +1086,37 @@ export function buildEvidenceLedger({ company, cninfo, downloads, tushare, tavil
       completedAt: generatedAt,
       purpose: "财务快照/三表/估值交叉验证",
       evidenceLevel: "B",
+      details: { rows: call.rows, error: call.error ?? null },
+    })
+  }
+  const FREE_QUOTE_LABELS = {
+    sina: { dataItem: "新浪财报", source: "sina", tool: "sina_financial_report" },
+    tencent: { dataItem: "腾讯行情快照", source: "tencent", tool: "tencent_gtimg_quote" },
+    cninfo: { dataItem: "巨潮公司概况", source: "cninfo", tool: "cninfo_company_profile" },
+  }
+  for (const call of freeQuote?.calls ?? []) {
+    const kind = call.apiName.startsWith("sina_")
+      ? "sina"
+      : call.apiName.startsWith("tencent_")
+        ? "tencent"
+        : call.apiName.startsWith("cninfo_")
+          ? "cninfo"
+          : "tencent"
+    const label = FREE_QUOTE_LABELS[kind]
+    rows.push({
+      dataItem:
+        kind === "sina"
+          ? `新浪财报 ${call.apiName.replace("sina_financial_report_", "三表-")}`
+          : label.dataItem,
+      source: label.source,
+      tool: label.tool,
+      status: call.status,
+      completedAt: generatedAt,
+      purpose:
+        kind === "cninfo"
+          ? "公司概况：行业/上市日期/主营业务（Tushare stock_basic 缺失时的免费回退源）"
+          : "财务快照/三表/估值（Tushare 缺失时的免费回退源）",
+      evidenceLevel: kind === "cninfo" ? "A" : "B",
       details: { rows: call.rows, error: call.error ?? null },
     })
   }
@@ -4981,7 +5020,7 @@ export async function runCompanyResearch(options = {}) {
       error: safeErrorMessage(err),
     }),
   })
-  const company = resolveCompanyFromInputs({ stockInput, tushareEvidence })
+  let company = resolveCompanyFromInputs({ stockInput, tushareEvidence })
   if (shouldRetryTushareWithResolvedTsCode({ seedCompany, company, tushareEvidence, credentials, options })) {
     tushareEvidence = await runCompanyResearchStage({
       stage: "tushare-resolved",
@@ -4998,6 +5037,18 @@ export async function runCompanyResearch(options = {}) {
       }),
     })
   }
+  // Free, no-token financial sources (Sina three statements + Eastmoney quote).
+  // Fills company profile + core financial snapshot when Tushare is unavailable.
+  const freeQuote = await runCompanyResearchStage({
+    stage: "freeQuote",
+    label: "Free financial sources (Sina statements + Eastmoney quote)",
+    timeoutMs: companyProviderStageTimeoutMs(options, "freeQuote"),
+    providerEvents,
+    onProgress: options.onProgress,
+    fn: () => collectFreeQuoteEvidence({ company: seedCompany, options }),
+    fallback: (err) => ({ status: "failed", configured: true, auth: "none", calls: [], companyPatch: {}, financials: { latestPeriod: null, metrics: {} }, error: safeErrorMessage(err) }),
+  })
+  company = mergeFreeQuoteCompanyPatch(company, freeQuote.companyPatch)
   const reportId = companyResearchReportId(company, options)
   const outputDir = path.join(projectPath, COMPANY_RESEARCH_ROOT, reportId)
   ensureCompanyResearchRelative(projectPath, outputDir)
@@ -5104,7 +5155,7 @@ export async function runCompanyResearch(options = {}) {
       marketValidation: null,
     }),
   })
-  const financials = buildFinancialsFromTushare(tushareEvidence)
+  const financials = mergeFreeQuoteIntoFinancials(buildFinancialsFromTushare(tushareEvidence), freeQuote.financials)
   const ledger = buildEvidenceLedger({
     company,
     cninfo,
@@ -5113,6 +5164,7 @@ export async function runCompanyResearch(options = {}) {
     tavily: tavilyEvidence,
     wikiContext,
     generatedAt,
+    freeQuote,
   })
   const evidencePack = {
     schema: "company-evidence-pack-v1",
@@ -5125,6 +5177,17 @@ export async function runCompanyResearch(options = {}) {
       calls: tushareEvidence.calls,
       tables: tushareEvidence.tables,
       error: tushareEvidence.error,
+    },
+    freeQuote: {
+      configured: freeQuote.configured,
+      auth: freeQuote.auth,
+      status: freeQuote.status,
+      calls: freeQuote.calls,
+      companyPatch: freeQuote.companyPatch,
+      profile: freeQuote.profile ?? null,
+      financials: freeQuote.financials,
+      warnings: freeQuote.warnings ?? null,
+      error: freeQuote.error ?? null,
     },
     tavily: tavilyEvidence,
     providerEvents,
@@ -5239,6 +5302,15 @@ export async function runCompanyResearch(options = {}) {
       cninfo: { mode: "public_web_adapter", configured: true, status: cninfo.status, announcements: cninfo.announcements.length, downloads: downloads.filter((item) => item.status === "success").length, error: cninfo.error ?? null },
       tushare: { configured: credentials.status.tushare.configured, auth: credentials.status.tushare.auth, status: tushareEvidence.status, calls: tushareEvidence.calls.length, error: tushareEvidence.error ?? null },
       tavily: { configured: credentials.status.tavily.configured, auth: credentials.status.tavily.auth, status: tavilyEvidence.status, queries: tavilyEvidence.queries.length, error: tavilyEvidence.error ?? null },
+      freeQuote: {
+        configured: freeQuote.configured,
+        auth: freeQuote.auth,
+        status: freeQuote.status,
+        calls: freeQuote.calls.length,
+        quoteSource: freeQuote.financials?.quoteSource ?? null,
+        warnings: freeQuote.warnings ?? null,
+        error: freeQuote.error ?? null,
+      },
       wiki: { configured: true, status: wikiContext.retrievalWarnings?.length ? "partial" : "success", counts: wikiContext.counts },
     },
     providerEvents,
@@ -5281,6 +5353,24 @@ export async function runCompanyResearch(options = {}) {
     },
   }
   await writeJson(paths.runSummary, runSummary)
+
+  // E10 复利回灌：公司研究结论 → wiki/总结/
+  let compoundPath = null
+  try {
+    const providerNames = [credentials.status.tushare.configured ? "Tushare" : null, credentials.status.tavily.configured ? "Tavily" : null, "CNINFO"].filter(Boolean).join("+")
+    compoundPath = await writeCompanyResearchCompound({
+      projectPath,
+      generatedAt,
+      company,
+      providerSummary: `${providerNames}(${tushareEvidence.calls.length + cninfo.announcements.length + tavilyEvidence.queries.length} 次调用)`,
+      outputDir,
+    })
+    runSummary.writePolicy.wroteFormalWiki = true
+    runSummary.writePolicy.compoundPath = compoundPath
+  } catch (_) {
+    // 复利回灌失败不阻断主流程
+  }
+
   return {
     ...runSummary,
     outputDirPath: outputDir,

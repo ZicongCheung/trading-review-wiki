@@ -57,6 +57,7 @@ import {
   validationRecordFromDailyMetric,
   verifyTrainingSampleExports,
 } from "./daily-loop.mjs"
+import { writeSelfQuestionCompound } from "./compound-feedback.mjs"
 
 export const SELF_QUESTION_SCHEMA = "self-question-v1"
 export const SELF_QUESTION_VALIDATION_METHOD = "self_question_market_feedback_v1"
@@ -2007,6 +2008,20 @@ export async function runSelfQuestionLoop(options = {}) {
           ...finishSelfQuestionLoopTiming(currentStageTiming),
         })
       }
+    }
+
+    // E10 复利回灌：自训练演化动作 → wiki/进化/
+    let compoundPath = null
+    try {
+      if (selfTraining?.actions?.length) {
+        compoundPath = await writeSelfQuestionCompound({
+          projectPath,
+          generatedAt: createdAt,
+          selfTraining,
+        })
+      }
+    } catch (_) {
+      // 复利回灌失败不阻断主流程
     }
 
     const manifest = buildManifest(selfQuestionLoopStatusFromStages(stages))

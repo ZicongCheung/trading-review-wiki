@@ -55,12 +55,12 @@ export function LintView() {
       const schema = await runSchemaLint(pp)
       let all = [...structural, ...schema]
 
-      if (runSemantic && (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom")) {
+      if (runSemantic && (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom" || llmConfig.provider === "deepseek")) {
         const semantic = await runSemanticLint(pp, llmConfig)
         all = [...all, ...semantic]
       }
 
-      if (runStrategy && (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom")) {
+      if (runStrategy && (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom" || llmConfig.provider === "deepseek")) {
         const strategyResults = await runStrategyComplianceLint(pp, llmConfig)
         all = [...all, ...strategyResults]
       }

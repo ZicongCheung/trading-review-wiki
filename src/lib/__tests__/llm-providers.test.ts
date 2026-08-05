@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { getProviderConfig } from "@/lib/llm-providers"
 
 // Inline minimal types to avoid store/zustand dependencies in unit tests
-type Provider = "openai" | "anthropic" | "google" | "ollama" | "custom" | "minimax" | "kimi" | "codex"
+type Provider = "openai" | "anthropic" | "google" | "ollama" | "custom" | "minimax" | "kimi" | "deepseek" | "codex"
 type ReasoningEffort = "minimal" | "low" | "medium" | "high"
 
 interface LlmConfig {
@@ -273,5 +273,132 @@ describe("Custom provider endpoint normalization", () => {
     )
 
     expect(cfg.url).toBe("https://example.com/v1/chat/completions")
+  })
+})
+
+describe("DeepSeek (custom endpoint) token + cache optimizations", () => {
+  const deepseekConfig = () =>
+    makeConfig({
+      provider: "custom",
+      customEndpoint: "https://api.deepseek.com/v1",
+      model: "deepseek-v4-flash",
+    })
+
+  it("uses DeepSeek chat/completions endpoint with OpenAI-compatible parsing", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    expect(cfg.url).toBe("https://api.deepseek.com/v1/chat/completions")
+    expect(cfg.isOpenAiCompatible).toBe(true)
+    expect(typeof cfg.parseStream).toBe("function")
+  })
+
+  it("includes max_tokens to bound output for DeepSeek", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    const body = cfg.buildBody([{ role: "user", content: "hi" }]) as Record<string, unknown>
+    expect(body.max_tokens).toBe(8192)
+    expect(body.stream).toBe(true)
+    expect(body.messages).toEqual([{ role: "user", content: "hi" }])
+  })
+
+  it("exposes parseUsage for DeepSeek prefix-cache hit capture", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    expect(typeof cfg.parseUsage).toBe("function")
+  })
+
+  it("parseUsage extracts tokens and DeepSeek cache_hits (prompt_tokens_details.cached_tokens)", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    const line = `data: ${JSON.stringify({
+      usage: {
+        prompt_tokens: 1200,
+        completion_tokens: 300,
+        total_tokens: 1500,
+        prompt_tokens_details: { cached_tokens: 1000 },
+      },
+    })}`
+    expect(cfg.parseUsage!(line)).toEqual({
+      promptTokens: 1200,
+      completionTokens: 300,
+      totalTokens: 1500,
+      cacheHitTokens: 1000,
+    })
+  })
+
+  it("parseUsage handles legacy prompt_cache_hit_tokens field", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    const line = `data: ${JSON.stringify({
+      usage: {
+        prompt_tokens: 500,
+        completion_tokens: 100,
+        total_tokens: 600,
+        prompt_cache_hit_tokens: 400,
+      },
+    })}`
+    expect(cfg.parseUsage!(line)?.cacheHitTokens).toBe(400)
+  })
+
+  it("parseUsage returns null for normal token delta lines (no usage object)", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    const line = `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}`
+    expect(cfg.parseUsage!(line)).toBeNull()
+  })
+
+  it("openai-compatible providers (ollama) also expose parseUsage", () => {
+    const cfg = getProviderConfig(makeConfig({ provider: "ollama" }))
+    expect(typeof cfg.parseUsage).toBe("function")
+  })
+})
+
+describe("Dedicated DeepSeek provider", () => {
+  const deepseekConfig = (overrides: Partial<LlmConfig> = {}) =>
+    makeConfig({
+      provider: "deepseek",
+      apiKey: "sk-test",
+      model: "deepseek-v4-flash",
+      customEndpoint: "",
+      ...overrides,
+    })
+
+  it("defaults to the official DeepSeek chat/completions endpoint", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    expect(cfg.url).toBe("https://api.deepseek.com/v1/chat/completions")
+    expect(cfg.isOpenAiCompatible).toBe(true)
+  })
+
+  it("sends a Bearer Authorization header", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    expect(cfg.headers.Authorization).toBe("Bearer sk-test")
+  })
+
+  it("honors a custom endpoint override (e.g. a proxy)", () => {
+    const cfg = getProviderConfig(
+      deepseekConfig({ customEndpoint: "https://my-proxy.example.com/v1/" }),
+    )
+    expect(cfg.url).toBe("https://my-proxy.example.com/v1/chat/completions")
+  })
+
+  it("includes max_tokens to bound output and passes the model name", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    const body = cfg.buildBody([{ role: "user", content: "hi" }]) as Record<string, unknown>
+    expect(body.max_tokens).toBe(8192)
+    expect(body.model).toBe("deepseek-v4-flash")
+    expect(body.stream).toBe(true)
+  })
+
+  it("exposes parseUsage for prefix-cache hit capture", () => {
+    const cfg = getProviderConfig(deepseekConfig())
+    expect(typeof cfg.parseUsage).toBe("function")
+    const line = `data: ${JSON.stringify({
+      usage: {
+        prompt_tokens: 1200,
+        completion_tokens: 300,
+        total_tokens: 1500,
+        prompt_tokens_details: { cached_tokens: 1000 },
+      },
+    })}`
+    expect(cfg.parseUsage!(line)).toEqual({
+      promptTokens: 1200,
+      completionTokens: 300,
+      totalTokens: 1500,
+      cacheHitTokens: 1000,
+    })
   })
 })

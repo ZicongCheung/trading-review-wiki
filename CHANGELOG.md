@@ -6,7 +6,50 @@
 
 ## Unreleased
 
-暂无。
+- **新增 DeepSeek 专用 LLM 提供商选项**:Settings → LLM Provider 新增 `DeepSeek`，默认端点 `https://api.deepseek.com/v1`（自动拼接 `/chat/completions`），默认模型 `deepseek-v4-flash`。复用 OpenAI 兼容解析、`parseUsage`（捕获前缀缓存命中 `prompt_tokens_details.cached_tokens`）与 `max_tokens: 8192` 输出上限，与原 `custom` + DeepSeek 端点行为一致，可直接替换。sources/lint/plan/ingest-queue 的 LLM 可用性判断同步识别 `deepseek`。
+- **DeepSeek 模型列表改为运行时从 API 获取（参考 esengine/DeepSeek-Reasonix）**:模型下拉不再写死，改为调用 DeepSeek `/v1/models` 接口动态拉取可用模型（与 Reasonix 一致），并提供「刷新模型」按钮手动刷新；接口不可用时回退到静态默认列表 `[deepseek-v4-flash, deepseek-v4-pro]`（`deepseek-chat`/`deepseek-reasoner` 已于 2026-07-24 被 DeepSeek 官方弃用，不再作为默认项）。`
+
+### 更新文件(Files)
+
+- `src/stores/wiki-store.ts`（`LlmConfig.provider` 联合类型加 `"deepseek"`）
+- `src/lib/llm-providers.ts`（新增 `case "deepseek"`）
+- `src/components/settings/settings-view.tsx`（PROVIDERS 列表 + Endpoint 字段 + 模型动态拉取/刷新）
+- `src/lib/llm-test.ts`（新增 `fetchDeepSeekModels`）
+- `src/components/plan/plan-audit-view.tsx`、`src/components/lint/lint-view.tsx`、`src/components/sources/sources-view.tsx`、`src/lib/ingest-queue.ts`（gating 判断加 `deepseek`）
+- `src/lib/__tests__/llm-providers.test.ts`（新增 Dedicated DeepSeek provider 测试套件）
+- `src/lib/__tests__/llm-test.test.ts`（新增 `fetchDeepSeekModels` 测试）
+- **P0-缓存前缀冻结**:新增 `src/lib/chat-prompts.ts`（`buildChatSystemPrompt()` 冻结稳定系统提示词 + `buildChatContextBlock()` 把检索结果/语种指令移到 user message），`chat-panel.tsx` 改用上述函数（system 提示词跨查询字节级稳定），`ingest.ts` analyze/write 阶段统一以 `buildIngestCommonPrefix()` 为基础前缀追加阶段指令；新增 `chat-prompts.test.ts`（9 例）+ 扩展 `ingest-cache-guard.test.ts`（stage 前缀一致性断言）。54/54 测试通过。
+- **P1+P2-DeepSeek 缓存命中率增强（参考 Reasonix）**:
+  - **P1-自动压缩（prefix-preserving compaction）**:`llm-client.ts` 新增 `compactConversation()` 纯函数——冻结 system 前缀原样保留，超阈值（>8 轮）的最旧轮次折叠为单条摘要 user 消息追加在冻结前缀之后，保住命中又限制上下文。
+  - **P1-TTL 冷恢复（DeepSeek 专属）**:`llm-client.ts` 新增 `DEEPSEEK_PREFIX_CACHE_TTL_MS=5min`、`isPastDeepSeekCacheTtl()`、`recordDeepSeekRequest()`/`getLastDeepSeekRequestAt()` 模块级 TTL 计时；`streamChat` 每次 DeepSeek 真实请求自动记录时间戳；`ingest.ts` 的 `prepareIngestHistory()` 在 `executeIngestWrites` 发送累积历史前判定：DeepSeek 下若距上次请求超 TTL 或轮次超阈值，则压缩历史再发（冷恢复时不产生额外 miss）。
+  - **P2-辅助调用钉死 flash（DeepSeek 专属）**:`streamChat` 新增 `options.modelOverride` 参数；`runRetryRequest`（schema 重试等辅助调用）在 `provider==="deepseek"` 时传 `modelOverride: DEEPSEEK_AUX_MODEL`（`deepseek-v4-flash`），避免用 v4-pro 跑辅助操作放大成本。
+  - **P2-前缀 SHA256 运行时守卫**:`llm-client.ts` 新增 `asyncSha256Hex()` 与 `PrefixGuard` 类（首次记录冻结前缀哈希，后续断言未漂移，防重构误改导致缓存静默失效）；`ingest-cache-guard.test.ts` 扩展为运行时哈希一致性断言。
+  - 注：原 P1 计划的「deep-research.ts 日期注入 system」项经代码核查不成立——`deep-research.ts:222` 的 `new Date()` 仅用于生成文件名，不进入 system 提示词；当前代码库无时间戳注入 system 的实例。
+  - 测试：新增 `llm-client-cache.test.ts`（13 例：compactConversation/isPastDeepSeekCacheTtl/TTL 状态/PrefixGuard/sha256/aux 常量）+ 扩展 `ingest-cache-guard.test.ts`（P2 守卫）+ 现有 LLM 测试；合计 73/73 通过。
+- **R1-R5 剩余优化 + 预存错误修复（参考 Reasonix，续上）**:
+  - **R1-deep-research 前缀冻结**:`deep-research.ts` 的 `synthesizeResearch` 把稳定规则（角色/语言/交叉引用/写作规则）抽为冻结 system 前缀，`wikiIndex`（随 wiki 变动的动态内容）从 system 移到 user message，使 system 提示词字节级稳定、跨调用命中 DeepSeek APC。
+  - **R2-chat 多轮自动压缩**:`chat-panel.tsx` 在发送前对 `llmMessages` 调用 `compactConversation({keepRecentRounds:6})`，冻结 system 前缀不动、超阈值历史折叠为摘要，与 ingest 行为一致；长会话既保前缀缓存又限制上下文。
+  - **R3-应用层保活（降级为策略）**:经评估，加定时器心跳侵入 UI 生命周期且消耗额外 token；Tauri 进程常驻已天然保温，且每次聊天/ingest 请求都会刷新前缀缓存 TTL。故**不引入代码定时器**，仅在 `llm-client.ts` 导出 `DEEPSEEK_PREFIX_CACHE_TTL_MS` 常量供参考，并在本文档记录"常驻即保温"原则。
+  - **R4-CLI 路径（核查无需改动）**:`scripts/ingest-pdf-standalone.cjs` 已有 `COMMON_PREFIX` 前缀纪律（正是 P0 缓存守卫测试比对对象）；`scripts/codex-ingest.mjs` 是独立 codex/OpenAI Responses API 体系，与 DeepSeek 优化无关且用户未使用，故不改动。
+  - **R5-预存类型错误修复**:① `buildUpdatePrompt` 的 `type` 经 `normalizeTypeAlias(inferTypeFromPath(...)) ?? "总结"` 归一为 `WikiType`，消除 `buildSchemaSection([type])` 字面量类型错误；② 删除死代码 `writeFileBlocks`（定义未调用）；③ `buildPlanPrompt`/`buildCreatePrompt`/`runPlanStage`/`runCreateStage` 清理未使用的 `sourceBaseName`/`fileName`/`wikiDirs` 参数（保留实际使用的 `wikiDirs` 仅作 `_wikiDirs` 占位）；④ `chat-panel.tsx` 删除死代码 `checkSaveWorthy`/`encodeContent`/`flattenFileNames`/`flattenMdFiles`/`flattenAllFiles` 及未用导入 `writeFile`/`useReviewStore`/`FileNode`；⑤ `deep-research.ts` 删除未用静态导入 `autoIngest`（动态导入仍保留）、未用变量 `processing`，`saveResearchDraft` 的 `llmConfig` 参数改 `_llmConfig`；⑥ `llm-client.ts` 的 `shouldUseNativeHttpForLlm` 参数改 `_config`。
+  - 验证：tsc 对我改的 4 文件（chat-panel/ingest/deep-research/llm-client）0 新增错误；vitest 73/73 通过。
+- **PostgreSQL 股票代码源 · 新增「更新库中股票数据」按钮（麦蕊 API → PG upsert）**:
+  - **需求对齐**:Settings → PostgreSQL 股票代码源面板新增「更新库中股票数据」按钮，置于「保存配置」「立即刷新股票代码库」同一行右侧；仅当股票代码库可用（即 PG 连接/表/字段映射完整且已有一次成功 sync 的 `status` 记录）时显示；点击从麦蕊 API（`https://api.mairuiapi.com/hslt/list/{licence}`）抓取全市场股票列表，upsert 回当前配置的 PG 表（与 ZhangInvest-Backend 同一张表）；当天已更新则按钮置灰并显示「今日已更新」。
+  - **新增 licence 配置项**:`PgConfig`（`settings.rs`/`wiki-store.ts`/`stock-codes.ts`）新增 `mairui_api_licence: Option<String>`；Settings 面板新增 licence 输入框（col-span-2，含说明文字），表名/列名 placeholder 改为 `public.stocks`/`stock_code`/`stock_name`（移除任何默认表暗示，用户必须显式配置）。
+  - **新增 `update_stocks_from_mairui` 命令（Rust）**:检查 licence 非空 → 校验 PG 配置完整 → reqwest GET 麦蕊 → 连 PG → `SELECT` 现有 `{col_ticker, col_stock_name}` → 事务内逐条 upsert（`mairui.dm`→`col_ticker`、`mairui.mc`→`col_stock_name`，存在则 UPDATE 否则 INSERT）→ 写 `.llm-wiki/mairui-fetch.json`（`{fetched_at, count, inserted, updated}`）→ 返回 `FetchResult`。
+  - **新增 `get_mairui_fetch_status` 命令（Rust）**:读取 `.llm-wiki/mairui-fetch.json` 返回上次抓取状态（独立维护，不污染股票代码 sync 状态）。
+  - **前端状态与置灰逻辑**:`PgConfigSection` 新增 `mairuiApiLicence`/`fetching`/`fetchStatus` state；`isFetchReady(cfg)` 需完整 PG + 表名 + 代码字段 + 名称字段 + licence；`isFetchedToday(fetchStatus)` 比对 `fetched_at` 前 10 位与今天；按钮 `disabled={fetching || !isFetchReady(currentConfig()) || isFetchedToday(fetchStatus)}`；新增 fetchStatus 显示行（上次抓取/共/新增/更新）。
+  - **修复「DB 中查不到股票」匹配问题（如「长川科技」）**:增强 `try_match`——新增 `strip_parentheses()`（去括号及内部内容）、`remove_ab_suffix()`（去末尾 A/B/H 股后缀）；匹配时遍历 4 种名称变体（原始 / 去括号 / 去 AB 后缀 / 去括号+去 AB）；子串兜底由「仅唯一候选时采用」改为「优先选最短包含候选，否则选最长被包含候选」，显著提升带括号/后缀的股票名命中率。
+  - 验证：前端 `tsc --noEmit`（tsconfig.app.json）对 settings-view.tsx/stock-codes.ts/wiki-store.ts **0 新增错误**；Rust 侧因沙箱 `target` 目录锁（os error 5）无法在本环境 `cargo check`，需在用户本机执行 `cargo check`/`cargo build` 验证。
+
+### 更新文件(Files)
+
+- `src-tauri/src/commands/stock_codes.rs`（新增 `MairuiStockItem`/`MairuiFetchFile`/`FetchResult`/`update_stocks_from_mairui`/`get_mairui_fetch_status`/`mairui_fetch_path`/`load_mairui_fetch_from_disk`/`fetch_mairui_stocks`/`build_mairui_select_sql` + `try_match` 增强 + `strip_parentheses`/`remove_ab_suffix`）
+- `src-tauri/src/lib.rs`（注册 2 个新命令）
+- `src-tauri/src/settings.rs`（`PgConfig` 新增 `mairui_api_licence`）
+- `src/commands/stock-codes.ts`（TS 封装 `updateStocksFromMairui`/`getMairuiFetchStatus` + `FetchResult` 类型）
+- `src/stores/wiki-store.ts`（`PgConfig` 新增 `mairui_api_licence`）
+- `src/components/settings/settings-view.tsx`（licence 输入框 + 按钮行第三按钮 + fetchStatus 显示 + `isFetchReady`/`isFetchedToday`/`handleUpdateStocksFromMairui`）
 
 ---
 

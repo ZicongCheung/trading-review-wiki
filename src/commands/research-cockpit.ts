@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 
 export type ResearchCockpitAction =
   | "agentic-ask"
+  | "ask"
   | "autoresearch-ledger"
   | "autoresearch-status"
   | "dashboard-data"
@@ -73,6 +74,16 @@ export type ResearchCockpitAction =
   | "watch-write"
   | "validate"
   | "report"
+  | "daily-loop"
+  | "company-research"
+  | "self-question"
+  | "research-os"
+  | "data-engineering"
+  | "deep-research"
+  | "concepts"
+  | "temporal-facts"
+  | "brain"
+  | "ima-sync"
 
 export async function runResearchCockpitCommand<T>(
   projectPath: string,

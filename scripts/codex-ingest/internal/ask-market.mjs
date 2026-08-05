@@ -1498,6 +1498,7 @@ export function parseDailyLoopMarketValidateMode(value) {
   if (["off", "none", "false", "0"].includes(raw)) return "off"
   if (["tencent", "tencent_kline", "qq"].includes(raw)) return "tencent"
   if (["eastmoney", "eastmoney_kline", "online", "web"].includes(raw)) return "eastmoney"
+  if (["xueqiu", "xueqiu_kline", "xq", "snowball"].includes(raw)) return "xueqiu"
   return "auto"
 }
 
@@ -1539,6 +1540,87 @@ export function tencentKlineUrl(code, limit) {
   const symbol = tencentSymbol(code)
   if (!symbol) return null
   return `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${Math.max(1, limit)},qfq`
+}
+
+export function xueqiuSymbol(code) {
+  const normalized = normalizeStockCode(code)
+  if (!normalized) return null
+  const exchange = normalized.slice(0, 2).toUpperCase()
+  const digits = normalized.slice(2)
+  if (!["SH", "SZ", "BJ"].includes(exchange)) return null
+  return `${exchange}${digits}`
+}
+
+export function xueqiuKlineUrl(code, limit) {
+  const symbol = xueqiuSymbol(code)
+  if (!symbol) return null
+  return `https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=${symbol}&begin=${Date.now()}&period=day&type=before&count=-${Math.max(1, limit)}&indicator=kline`
+}
+
+export function xueqiuTimestampToDate(timestamp) {
+  if (!Number.isFinite(timestamp)) return null
+  // Xueqiu stamps each bar at 00:00 Beijing time. Shift into UTC before slicing
+  // the calendar date, otherwise every bar reads one day early.
+  return new Date(timestamp + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+const XUEQIU_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+const XUEQIU_COOKIE_TTL_MS = 20 * 60 * 1000
+let xueqiuCookieCache = { value: null, expiresAt: 0 }
+let xueqiuCookieInflight = null
+
+async function requestXueqiuCookie(timeoutMs) {
+  const jar = new Map()
+  const absorb = (response) => {
+    const raw = typeof response?.headers?.getSetCookie === "function" ? response.headers.getSetCookie() : []
+    for (const line of raw) {
+      const pair = String(line).split(";")[0].trim()
+      const index = pair.indexOf("=")
+      if (index > 0) jar.set(pair.slice(0, index), pair.slice(index + 1))
+    }
+  }
+  // The Xueqiu homepage only issues the WAF cookie (acw_tc). /hq is what actually
+  // mints xq_a_token, which the quote API rejects requests without (HTTP 400016).
+  for (const url of ["https://xueqiu.com/", "https://xueqiu.com/hq"]) {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        "user-agent": XUEQIU_USER_AGENT,
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "zh-CN,zh;q=0.9",
+        referer: "https://xueqiu.com/",
+        cookie: [...jar].map(([key, value]) => `${key}=${value}`).join("; "),
+      },
+    })
+    absorb(response)
+  }
+  if (!jar.has("xq_a_token")) return null
+  return [...jar].map(([key, value]) => `${key}=${value}`).join("; ")
+}
+
+export function resetXueqiuCookieCache() {
+  xueqiuCookieCache = { value: null, expiresAt: 0 }
+}
+
+export async function resolveXueqiuCookie(options = {}) {
+  const timeoutMs = parsePositiveInteger(options.externalMarketTimeoutMs, 8000)
+  if (xueqiuCookieCache.value && xueqiuCookieCache.expiresAt > Date.now()) return xueqiuCookieCache.value
+  // Single-flight: a daily-loop run fans out ~80 concurrent stock fetches, and
+  // each must reuse one bootstrap instead of hammering Xueqiu with 80 of them.
+  if (!xueqiuCookieInflight) {
+    xueqiuCookieInflight = requestXueqiuCookie(timeoutMs)
+      .then((cookie) => {
+        if (cookie) xueqiuCookieCache = { value: cookie, expiresAt: Date.now() + XUEQIU_COOKIE_TTL_MS }
+        return cookie
+      })
+      .catch(() => null)
+      .finally(() => {
+        xueqiuCookieInflight = null
+      })
+  }
+  return xueqiuCookieInflight
 }
 
 export async function normalizeExternalMarketPayload(payload) {
@@ -1696,19 +1778,105 @@ export async function fetchTencentKlinesForStock(stock, options = {}) {
   }
 }
 
+export async function fetchXueqiuKlinesForStock(stock, options = {}) {
+  const limit = parsePositiveInteger(options.stockLookbackDays ?? options.lookbackDays, 20)
+  const url = xueqiuKlineUrl(stock.code, limit)
+  const symbol = xueqiuSymbol(stock.code)
+  if (!url || !symbol) return { code: stock.code, status: "invalid_code", rows: [], warning: "无法映射雪球 symbol", source: "xueqiu_kline" }
+  try {
+    let payload
+    if (options.externalMarketFetcher) {
+      payload = await options.externalMarketFetcher({ source: "xueqiu_kline", code: stock.code, url, limit })
+    } else {
+      const cookie = await resolveXueqiuCookie(options)
+      if (!cookie) return { code: stock.code, status: "error", rows: [], warning: "雪球Cookie获取失败", source: "xueqiu_kline" }
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(parsePositiveInteger(options.externalMarketTimeoutMs, 8000)),
+        headers: {
+          "user-agent": XUEQIU_USER_AGENT,
+          accept: "application/json,text/plain,*/*",
+          "accept-language": "zh-CN,zh;q=0.9",
+          referer: `https://xueqiu.com/S/${symbol}`,
+          cookie,
+        },
+      })
+      if (response.status === 400 || response.status === 401 || response.status === 403) {
+        // Token expired or rejected: drop the cache so the next call re-bootstraps.
+        resetXueqiuCookieCache()
+      }
+      if (!response.ok) return { code: stock.code, status: "error", rows: [], warning: `雪球K线HTTP ${response.status}`, source: "xueqiu_kline" }
+      payload = await response.json()
+    }
+    const parsed = await normalizeExternalMarketPayload(payload)
+    const columns = parsed?.data?.column
+    const items = parsed?.data?.item
+    if (!Array.isArray(columns) || !Array.isArray(items)) {
+      return {
+        code: stock.code,
+        status: "error",
+        rows: [],
+        warning: `雪球K线返回异常 ${parsed?.error_description ?? parsed?.error_code ?? "结构缺失"}`,
+        source: "xueqiu_kline",
+      }
+    }
+    const columnIndex = new Map(columns.map((name, index) => [name, index]))
+    const pick = (parts, name) => {
+      const index = columnIndex.get(name)
+      if (index == null || index >= parts.length) return null
+      const value = Number(parts[index])
+      return Number.isFinite(value) ? value : null
+    }
+    const normalized = normalizeStockCode(stock.code)
+    const rows = items
+      .filter((parts) => Array.isArray(parts))
+      .map((parts) => ({
+        ticker: normalized,
+        date: xueqiuTimestampToDate(pick(parts, "timestamp")),
+        open: pick(parts, "open"),
+        close: pick(parts, "close"),
+        high: pick(parts, "high"),
+        low: pick(parts, "low"),
+        volume: pick(parts, "volume"),
+        amount: pick(parts, "amount"),
+        pctChange: pick(parts, "percent"),
+        change: pick(parts, "chg"),
+        turnover: pick(parts, "turnoverrate"),
+      }))
+      .filter((row) => row.date && row.close != null)
+    return {
+      code: stock.code,
+      status: rows.length > 0 ? "ok" : "no_rows",
+      rows,
+      warning: rows.length > 0 ? null : "雪球未返回K线",
+      name: stock.name,
+      source: "xueqiu_kline",
+    }
+  } catch (err) {
+    return { code: stock.code, status: "error", rows: [], warning: `雪球K线失败: ${safeErrorMessage(err)}`, source: "xueqiu_kline" }
+  }
+}
+
 export async function fetchDailyLoopExternalMarketMetrics(stocks, options = {}) {
   const mode = parseDailyLoopMarketValidateMode(options.marketValidate ?? options.marketValidation ?? options.externalMarket)
   const uniqueStocks = [...new Map(stocks.filter((stock) => stock?.code).map((stock) => [stock.code, stock])).values()]
   if (mode === "off") return { status: "off", source: null, metrics: new Map(), warning: "external market validation disabled" }
   if (uniqueStocks.length === 0) return { status: "empty", source: "eastmoney_kline", metrics: new Map(), warning: "没有可外部验证的股票代码" }
   const concurrency = parsePositiveInteger(options.externalMarketConcurrency, 4)
-  const source = mode === "eastmoney" ? "eastmoney_kline" : "tencent_kline"
+  const sourceByMode = { eastmoney: "eastmoney_kline", tencent: "tencent_kline", xueqiu: "xueqiu_kline" }
+  const source = sourceByMode[mode] ?? "xueqiu_kline"
   const items = await mapWithConcurrency(uniqueStocks, concurrency, async (stock) => {
     const fetchOptions = { ...options, lookbackDays: options.stockLookbackDays ?? options.lookbackDays ?? 20 }
     if (mode === "eastmoney") return fetchEastmoneyKlinesForStock(stock, fetchOptions)
-    const tencent = await fetchTencentKlinesForStock(stock, fetchOptions)
-    if (tencent.status === "ok" || mode === "tencent") return tencent
-    return fetchEastmoneyKlinesForStock(stock, fetchOptions)
+    if (mode === "xueqiu") return fetchXueqiuKlinesForStock(stock, fetchOptions)
+    if (mode === "tencent") return fetchTencentKlinesForStock(stock, fetchOptions)
+    // auto: Xueqiu first — it is the only source returning amount + turnover
+    // reliably, and it tolerates high concurrency. Eastmoney has the same fields
+    // but rate-limits hard (socket hang up); Tencent never returns amount/turnover.
+    const xueqiu = await fetchXueqiuKlinesForStock(stock, fetchOptions)
+    if (xueqiu.status === "ok") return xueqiu
+    const eastmoney = await fetchEastmoneyKlinesForStock(stock, fetchOptions)
+    if (eastmoney.status === "ok") return eastmoney
+    return fetchTencentKlinesForStock(stock, fetchOptions)
   })
   const metrics = new Map()
   let okCount = 0

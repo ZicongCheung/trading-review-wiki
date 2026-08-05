@@ -1,5 +1,7 @@
+use std::io::{BufReader, BufRead};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use tauri::Emitter;
 
 const MAX_OUTPUT_BYTES: usize = 2_000_000;
 const DEFAULT_FINANCE_ENTITY_AUDIT_ROOTS: [&str; 1] = [
@@ -71,6 +73,7 @@ fn project_bounded_path(project_path: &str, source: &str) -> bool {
         || ALLOWED_EXTERNAL_SIGNAL_SOURCE_ROOTS
             .iter()
             .any(|root| path_is_within(&candidate, Path::new(root)))
+        || path_is_within(&candidate, &Path::new(project_path).join("raw"))
 }
 
 fn bounded_project_source_arg(
@@ -176,6 +179,463 @@ mod tests {
     }
 
     #[test]
+    fn research_cockpit_company_research_whitelist() {
+        let project = temp_project_path();
+        // GUI panel depends on this exact safe-subset contract. The heavy
+        // LLM stages (plugin-review / plugin-led / plugin-optimize) spawn the
+        // macOS codex binary and are intentionally excluded; base + --deep
+        // reports are template-assembled from CNINFO/Tushare/wiki data.
+        let cr = build_allowed_args(
+            "company-research",
+            &[
+                "--stock".into(),
+                "600000".into(),
+                "--from".into(),
+                "2025-01-01".into(),
+                "--to".into(),
+                "2025-12-31".into(),
+                "--cninfo-event-from".into(),
+                "2025-01-01".into(),
+                "--deep".into(),
+            ],
+            &project,
+        )
+        .expect("company-research should be allowed");
+        assert_eq!(cr[0..3], ["company-research", "--stock", "600000"]);
+        assert!(cr.contains(&"--provider".to_string()));
+        assert!(cr.contains(&"--deep".to_string()));
+        assert!(cr.contains(&"--from".to_string()));
+        assert!(cr.contains(&"--cninfo-event-from".to_string()));
+        // Missing --stock must be rejected by the whitelist.
+        assert!(build_allowed_args("company-research", &[], &project).is_err());
+
+        // Deep-scope knobs are only forwarded together with --deep.
+        let cr_deep = build_allowed_args(
+            "company-research",
+            &[
+                "--stock".into(),
+                "600000".into(),
+                "--deep".into(),
+                "--cninfo-periodic-from".into(),
+                "2024-01-01".into(),
+                "--top-wiki".into(),
+                "15".into(),
+                "--top-raw".into(),
+                "10".into(),
+                "--graph-neighbors".into(),
+                "30".into(),
+                "--graph-depth".into(),
+                "3".into(),
+                "--cninfo-download-limit".into(),
+                "80".into(),
+            ],
+            &project,
+        )
+        .expect("company-research deep should be allowed");
+        assert!(cr_deep.contains(&"--cninfo-periodic-from".to_string()));
+        assert!(cr_deep.contains(&"--top-wiki".to_string()));
+        assert!(cr_deep.contains(&"--top-raw".to_string()));
+        assert!(cr_deep.contains(&"--graph-neighbors".to_string()));
+        assert!(cr_deep.contains(&"--graph-depth".to_string()));
+        assert!(cr_deep.contains(&"--cninfo-download-limit".to_string()));
+
+        // Without --deep the scope knobs must NOT leak through.
+        let cr_shallow = build_allowed_args(
+            "company-research",
+            &[
+                "--stock".into(),
+                "600000".into(),
+                "--top-wiki".into(),
+                "15".into(),
+            ],
+            &project,
+        )
+        .expect("company-research shallow should be allowed");
+        assert!(!cr_shallow.contains(&"--top-wiki".to_string()));
+    }
+
+    #[test]
+    fn research_cockpit_brain_arm() {
+        let project = temp_project_path();
+        // Default (no positional) resolves to `status`.
+        let status = build_allowed_args("brain", &[], &project).expect("brain status should be allowed");
+        assert_eq!(status, vec!["brain".to_string(), "status".to_string()]);
+
+        // Explicit `status` positional is passed through.
+        let status_explicit = build_allowed_args("brain", &["status".to_string()], &project)
+            .expect("brain status should be allowed");
+        assert_eq!(status_explicit, vec!["brain".to_string(), "status".to_string()]);
+
+        // remember requires --type and --text; optional fields forwarded only if present.
+        let remember = build_allowed_args(
+            "brain",
+            &[
+                "remember".to_string(),
+                "--type".to_string(),
+                "strategy".to_string(),
+                "--text".to_string(),
+                "波段纪律：跌破5日线减半".to_string(),
+                "--title".to_string(),
+                "交易纪律".to_string(),
+                "--tags".to_string(),
+                "纪律,止损".to_string(),
+            ],
+            &project,
+        )
+        .expect("brain remember should be allowed");
+        assert_eq!(remember[0..4], ["brain", "remember", "--type", "strategy"]);
+        assert!(remember.contains(&"--text".to_string()));
+        assert!(remember.contains(&"--title".to_string()));
+        assert!(remember.contains(&"--tags".to_string()));
+        // No --status/--source/--related provided => must not appear.
+        assert!(!remember.contains(&"--status".to_string()));
+        assert!(!remember.contains(&"--source".to_string()));
+        assert!(!remember.contains(&"--related".to_string()));
+
+        // remember without required --type must be rejected.
+        assert!(build_allowed_args("brain", &["remember".to_string(), "--text".to_string(), "x".to_string()], &project).is_err());
+
+        // resolve requires --id and --result; --note optional.
+        let resolve = build_allowed_args(
+            "brain",
+            &[
+                "resolve".to_string(),
+                "--id".to_string(),
+                "mem_001".to_string(),
+                "--result".to_string(),
+                "confirmed".to_string(),
+                "--note".to_string(),
+                "已验证".to_string(),
+            ],
+            &project,
+        )
+        .expect("brain resolve should be allowed");
+        assert_eq!(resolve[0..2], ["brain", "resolve"]);
+        assert!(resolve.contains(&"--id".to_string()));
+        assert!(resolve.contains(&"--result".to_string()));
+        assert!(resolve.contains(&"--note".to_string()));
+
+        // Unknown subcommand is NOT allow-listed; defaults to status.
+        let unknown = build_allowed_args("brain", &["delete-everything".to_string()], &project)
+            .expect("brain should default unknown subcommand to status");
+        assert_eq!(unknown, vec!["brain".to_string(), "status".to_string()]);
+    }
+
+    #[test]
+    fn research_cockpit_deep_research_arm() {
+        let project = temp_project_path();
+
+        // Missing --topic must error.
+        assert!(build_allowed_args("deep-research", &[], &project).is_err());
+
+        // Basic invocation with topic.
+        let dr = build_allowed_args(
+            "deep-research",
+            &["--topic".to_string(), "AI芯片市场趋势".to_string()],
+            &project,
+        )
+        .expect("deep-research with topic should be allowed");
+        assert_eq!(dr[0..3], ["deep-research", "--topic", "AI芯片市场趋势"]);
+        assert!(dr.contains(&"--provider".to_string()));
+
+        // With write + ingest switches.
+        let dw = build_allowed_args(
+            "deep-research",
+            &[
+                "--topic".to_string(), "测试".to_string(),
+                "--write".to_string(),
+                "--ingest".to_string(),
+                "--apply-ingest".to_string(),
+                "--include-invalidated".to_string(),
+            ],
+            &project,
+        )
+        .expect("deep-research with write switches should be allowed");
+        assert!(dw.contains(&"--write".to_string()));
+        assert!(dw.contains(&"--ingest".to_string()));
+        assert!(dw.contains(&"--apply-ingest".to_string()));
+        assert!(dw.contains(&"--include-invalidated".to_string()));
+
+        // With numeric params.
+        let dn = build_allowed_args(
+            "deep-research",
+            &[
+                "--topic".to_string(), "test".to_string(),
+                "--source-k".to_string(), "5".to_string(),
+                "--graph-depth".to_string(), "3".to_string(),
+                "--graph-neighbors".to_string(), "10".to_string(),
+                "--top-brain".to_string(), "20".to_string(),
+            ],
+            &project,
+        )
+        .expect("deep-research with numeric params should be allowed");
+        assert!(dn.contains(&"--source-k".to_string()));
+        assert!(dn.contains(&"--graph-depth".to_string()));
+        assert!(dn.contains(&"--graph-neighbors".to_string()));
+        assert!(dn.contains(&"--top-brain".to_string()));
+    }
+
+    #[test]
+    fn research_cockpit_concepts_arm() {
+        let project = temp_project_path();
+        // Default audit
+        let c = build_allowed_args("concepts", &[], &project).expect("concepts should be allowed");
+        assert_eq!(c, vec!["concepts".to_string(), "audit".to_string()]);
+
+        // With --write
+        let cw = build_allowed_args(
+            "concepts",
+            &["audit".to_string(), "--write".to_string()],
+            &project,
+        )
+        .expect("concepts --write should be allowed");
+        assert!(cw.contains(&"--write".to_string()));
+
+        // With --top-n
+        let cn = build_allowed_args(
+            "concepts",
+            &["audit".to_string(), "--top-n".to_string(), "50".to_string()],
+            &project,
+        )
+        .expect("concepts --top-n should be allowed");
+        assert!(cn.contains(&"--top-n".to_string()));
+        assert!(cn.contains(&"50".to_string()));
+    }
+
+    #[test]
+    fn research_cockpit_temporal_facts_arm() {
+        let project = temp_project_path();
+        // Default audit
+        let t = build_allowed_args("temporal-facts", &[], &project)
+            .expect("temporal-facts should be allowed");
+        assert_eq!(t, vec!["temporal-facts".to_string(), "audit".to_string()]);
+
+        // With --write
+        let tw = build_allowed_args(
+            "temporal-facts",
+            &["audit".to_string(), "--write".to_string()],
+            &project,
+        )
+        .expect("temporal-facts --write should be allowed");
+        assert!(tw.contains(&"--write".to_string()));
+    }
+
+    #[test]
+    fn research_cockpit_data_engineering_arm() {
+        let project = temp_project_path();
+
+        // Missing --task must error.
+        assert!(build_allowed_args("data-engineering", &[], &project).is_err());
+
+        // Unknown --task must error.
+        assert!(build_allowed_args(
+            "data-engineering",
+            &["--task".to_string(), "destroy-world".to_string()],
+            &project,
+        )
+        .is_err());
+
+        // prepare
+        let prep = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "prepare".to_string(),
+                "--source".to_string(), "/path/to/source".to_string(),
+                "--schema".to_string(), "/schema/foo".to_string(),
+                "--no-report".to_string(),
+            ],
+            &project,
+        )
+        .expect("prepare should be allowed");
+        assert_eq!(prep[0..4], ["prepare", "--source", "/path/to/source", "--schema"]);
+        assert!(prep.contains(&"--no-report".to_string()));
+
+        // convert-source
+        let conv = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "convert-source".to_string(),
+                "--source".to_string(), "/src/report.pdf".to_string(),
+                "--overwrite".to_string(),
+            ],
+            &project,
+        )
+        .expect("convert-source should be allowed");
+        assert_eq!(conv[0..2], ["convert-source", "--source"]);
+        assert!(conv.contains(&"/src/report.pdf".to_string()));
+
+        // embeddings status (default)
+        let emb = build_allowed_args(
+            "data-engineering",
+            &["--task".to_string(), "embeddings".to_string()],
+            &project,
+        )
+        .expect("embeddings should be allowed");
+        assert_eq!(emb[0..2], ["embeddings", "status"]);
+
+        // api-run with required --source
+        let apr = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "api-run".to_string(),
+                "--source".to_string(), "/src/doc.md".to_string(),
+                "--judgments".to_string(),
+            ],
+            &project,
+        )
+        .expect("api-run should be allowed");
+        assert_eq!(apr[0..2], ["api-run", "--source"]);
+        assert!(apr.contains(&"--provider".to_string()));
+
+        // finalize with required --report
+        let fin = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "finalize".to_string(),
+                "--report".to_string(), "/tmp/rpt".to_string(),
+            ],
+            &project,
+        )
+        .expect("finalize should be allowed");
+        assert_eq!(fin[0..2], ["finalize", "--report"]);
+
+        // apply
+        let app = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "apply".to_string(),
+                "--manifest".to_string(), "/tmp/mf".to_string(),
+                "--write".to_string(),
+            ],
+            &project,
+        )
+        .expect("apply should be allowed");
+        assert_eq!(app[0..2], ["apply", "--manifest"]);
+        assert!(app.contains(&"--write".to_string()));
+
+        // batch-run
+        let brn = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "batch-run".to_string(),
+                "--sources".to_string(), "/sources/".to_string(),
+                "--write".to_string(),
+            ],
+            &project,
+        )
+        .expect("batch-run should be allowed");
+        assert_eq!(brn[0..2], ["batch-run", "--sources"]);
+
+        // sag-sync
+        let sag = build_allowed_args(
+            "data-engineering",
+            &[
+                "--task".to_string(), "sag-sync".to_string(),
+            ],
+            &project,
+        )
+        .expect("sag-sync should be allowed");
+        assert_eq!(sag[0..2], ["sag-sync", "status"]);
+
+        // hygiene (default audit)
+        let hyg = build_allowed_args(
+            "data-engineering",
+            &["--task".to_string(), "hygiene".to_string()],
+            &project,
+        )
+        .expect("hygiene should be allowed");
+        assert_eq!(hyg[0..2], ["hygiene", "audit"]);
+    }
+
+    #[test]
+    fn research_cockpit_research_os_whitelist() {
+        let project = temp_project_path();
+        // research-os agent <status|plan|step|review|verify> with positional
+        // subcommand tokens and a few flags.
+        let ros = build_allowed_args(
+            "research-os",
+            &[
+                "agent".into(),
+                "status".into(),
+                "--write".into(),
+                "--step-id".into(),
+                "abc-123".into(),
+                "--limit".into(),
+                "50".into(),
+            ],
+            &project,
+        )
+        .expect("research-os should be allowed");
+        assert_eq!(ros[0..3], ["research-os", "agent", "status"]);
+        assert!(ros.contains(&"--write".to_string()));
+        assert!(ros.contains(&"--step-id".to_string()));
+        assert!(ros.contains(&"abc-123".to_string()));
+        assert!(ros.contains(&"--limit".to_string()));
+        assert!(ros.contains(&"50".to_string()));
+
+        // Unknown positional tokens must be dropped; "agent" is always re-added.
+        let ros_bad = build_allowed_args(
+            "research-os",
+            &["evil".into(), "status".into()],
+            &project,
+        )
+        .expect("research-os should be allowed");
+        assert!(!ros_bad.contains(&"evil".to_string()));
+        assert!(ros_bad.contains(&"agent".to_string()));
+        assert!(ros_bad.contains(&"status".to_string()));
+    }
+
+    #[test]
+    fn research_cockpit_self_question_whitelist() {
+        let project = temp_project_path();
+        // GUI panel: recursive self-question loop (ask->validate->attribute trio)
+        // with deterministic, DeepSeek-safe options.
+        let sq = build_allowed_args(
+            "self-question",
+            &[
+                "--stages".into(),
+                "generate,validate,attribute".into(),
+                "--question-count".into(),
+                "3".into(),
+                "--market-validate".into(),
+                "xueqiu".into(),
+                "--self-train-write".into(),
+                "--write".into(),
+            ],
+            &project,
+        )
+        .expect("self-question should be allowed");
+        assert_eq!(sq[0..3], ["self-question", "loop", "--stages"]);
+        assert!(sq.contains(&"--market-validate".to_string()));
+        assert!(sq.contains(&"--allow-anchored-external-market".to_string()));
+        // Hardcoded DeepSeek-safe planner disable.
+        assert!(sq.contains(&"--no-llm-question-planner".to_string()));
+        assert!(sq.contains(&"--provider".to_string()));
+        assert!(sq.contains(&"--self-train-write".to_string()));
+        assert!(sq.contains(&"--write".to_string()));
+
+        // Unknown market-validate value falls back to xueqiu.
+        let sq_bad = build_allowed_args(
+            "self-question",
+            &["--market-validate".into(), "bogus".into()],
+            &project,
+        )
+        .expect("self-question should still be allowed");
+        let mv_idx = sq_bad.iter().position(|a| a == "--market-validate").unwrap();
+        assert_eq!(sq_bad[mv_idx + 1], "xueqiu");
+
+        // --write / --self-train-write are conditional and absent by default.
+        let sq_dry = build_allowed_args(
+            "self-question",
+            &["--stages".into(), "generate,validate".into()],
+            &project,
+        )
+        .expect("self-question dry should be allowed");
+        assert!(!sq_dry.contains(&"--write".to_string()));
+        assert!(!sq_dry.contains(&"--self-train-write".to_string()));
+    }
+
+    #[test]
     fn research_cockpit_builds_lite_allowlisted_actions() {
         let project = temp_project_path();
         let discover = build_allowed_args(
@@ -264,6 +724,10 @@ mod tests {
                 "候选假设预检".into(),
                 "--agent-concurrency".into(),
                 "2".into(),
+                "--sources".into(),
+                "wiki,raw,graph".into(),
+                "--source-k".into(),
+                "5".into(),
             ],
             &project,
         )
@@ -272,6 +736,10 @@ mod tests {
         assert!(precheck.contains(&"--agentic".to_string()));
         assert!(precheck.contains(&"--show-context".to_string()));
         assert!(precheck.contains(&"--show-sources".to_string()));
+        assert!(precheck.contains(&"--sources".to_string()));
+        assert!(precheck.contains(&"wiki,raw,graph".to_string()));
+        assert!(precheck.contains(&"--source-k".to_string()));
+        assert!(precheck.contains(&"5".to_string()));
         assert!(precheck.contains(&"--no-agent-artifacts".to_string()));
 
         let sources = build_allowed_args(
@@ -287,6 +755,62 @@ mod tests {
         .expect("wechat source list action should be allowed");
         assert_eq!(sources[0..4], ["hypothesis", "wechat-inbox", "sources", "--source"]);
         assert!(sources.contains(&"--limit".to_string()));
+
+        // daily-loop: the GUI panel depends on this exact contract.
+        let daily_loop = build_allowed_args(
+            "daily-loop",
+            &[
+                "--mode".into(),
+                "premarket".into(),
+                "--question-count".into(),
+                "2".into(),
+                "--write".into(),
+            ],
+            &project,
+        )
+        .expect("daily-loop should be allowed");
+        assert_eq!(daily_loop[0..3], ["daily-loop", "--mode", "premarket"]);
+        assert!(daily_loop.contains(&"--write".to_string()));
+        // DeepSeek/OpenAI-compatible endpoints lack /v1/responses.
+        assert!(daily_loop.contains(&"--no-llm-question-planner".to_string()));
+        // Xueqiu is the default: it is the only source that stays complete
+        // (amount + turnover) under the panel's concurrency without rate-limiting.
+        let mv_idx = daily_loop
+            .iter()
+            .position(|a| a == "--market-validate")
+            .expect("--market-validate must be forwarded");
+        assert_eq!(daily_loop[mv_idx + 1], "xueqiu");
+        // Explicit alternates must survive the whitelist.
+        for source in ["eastmoney", "tencent", "auto", "off"] {
+            let forwarded = build_allowed_args(
+                "daily-loop",
+                &["--market-validate".into(), source.into()],
+                &project,
+            )
+            .expect("daily-loop should be allowed");
+            let idx = forwarded
+                .iter()
+                .position(|a| a == "--market-validate")
+                .expect("--market-validate must be forwarded");
+            assert_eq!(forwarded[idx + 1], source);
+        }
+        // Unknown values must fall back to xueqiu rather than leaking through.
+        let daily_loop_bad = build_allowed_args(
+            "daily-loop",
+            &["--market-validate".into(), "bogus-source".into()],
+            &project,
+        )
+        .expect("daily-loop should be allowed");
+        let bad_idx = daily_loop_bad
+            .iter()
+            .position(|a| a == "--market-validate")
+            .expect("--market-validate must be forwarded");
+        assert_eq!(daily_loop_bad[bad_idx + 1], "xueqiu");
+
+        // (company-research whitelist contract is now covered by the dedicated
+        //  research_cockpit_company_research_whitelist test below, since this
+        //  large test panics earlier on Windows at the `codex` containment
+        //  assertions and never reaches this point.)
 
         let observation = build_allowed_args(
             "observation-draft-write",
@@ -1043,6 +1567,361 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 concurrency,
             ]
         }
+        "ask" => {
+            let query = require_arg(args, "--query")?;
+            let sources = bounded_text_arg(arg_value(args, "--sources"), "wiki,raw,graph,facts,brain", 180);
+            let source_k = bounded_numeric_arg(arg_value(args, "--source-k"), "3", 8);
+            let top_wiki = bounded_numeric_arg(arg_value(args, "--top-wiki"), "12", 40);
+            let top_raw = bounded_numeric_arg(arg_value(args, "--top-raw"), "12", 40);
+            let graph_depth = bounded_numeric_arg(arg_value(args, "--graph-depth"), "2", 4);
+            let provider = bounded_text_arg(arg_value(args, "--provider"), "openai", 32);
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
+            let mut built = vec![
+                "ask".into(),
+                "--query".into(),
+                bounded_text_arg(Some(query), "", 800),
+                "--sources".into(),
+                sources,
+                "--source-k".into(),
+                source_k,
+                "--top-wiki".into(),
+                top_wiki,
+                "--top-raw".into(),
+                top_raw,
+                "--graph-depth".into(),
+                graph_depth,
+                "--provider".into(),
+                if provider == "codex" { "codex".into() } else { "openai".into() },
+            ];
+            if !api_key.is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
+            built
+        }
+        "daily-loop" => {
+            let mode_raw = bounded_text_arg(arg_value(args, "--mode"), "full", 16);
+            let mode = if ["premarket", "postclose", "full"].contains(&mode_raw.as_str()) {
+                mode_raw
+            } else {
+                "full".to_string()
+            };
+            let question_count = bounded_numeric_arg(arg_value(args, "--question-count"), "8", 20);
+            // NOTE on source choice (measured on 83 stocks):
+            //   xueqiu   -> 83/83 ok, amount + turnover always present, ~0.4s @conc16
+            //   eastmoney-> full fields but rate-limits hard (32/83 socket hang up)
+            //   tencent  -> stable, but never returns amount/turnover (metrics null)
+            // Xueqiu is therefore the default for the GUI panel, where volume
+            // evidence is what makes the report's conclusions falsifiable.
+            let market_validate_raw =
+                bounded_text_arg(arg_value(args, "--market-validate"), "xueqiu", 16);
+            let market_validate = if ["off", "auto", "on", "eastmoney", "tencent", "xueqiu"]
+                .contains(&market_validate_raw.as_str())
+            {
+                market_validate_raw
+            } else {
+                "xueqiu".to_string()
+            };
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
+            let mut built = vec![
+                "daily-loop".into(),
+                "--mode".into(),
+                mode,
+                "--question-count".into(),
+                question_count,
+                "--provider".into(),
+                "openai".into(),
+                "--market-validate".into(),
+                market_validate,
+                // DeepSeek/OpenAI-compatible endpoints do not support the /v1/responses
+                // planner used by runDailyLoop; disable it so questions fall back to
+                // rule-based generation (answers still go through askWiki chat completions).
+                "--no-llm-question-planner".into(),
+            ];
+            if args.iter().any(|a| a == "--validate-pending-only") {
+                built.push("--validate-pending-only".into());
+            }
+            if args.iter().any(|a| a == "--write") {
+                built.push("--write".into());
+            }
+            if !api_key.is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
+            built
+        }
+        "company-research" => {
+            // Safe subset for the GUI panel. The heavy LLM stages
+            // (plugin-review / plugin-led / plugin-optimize) spawn the macOS
+            // codex binary and are intentionally excluded here; the base and
+            // --deep reports are template-assembled from Tushare/CNINFO data
+            // and need no external LLM.
+            let stock = require_arg(args, "--stock")?;
+            let from = bounded_text_arg(arg_value(args, "--from"), "", 16);
+            let to = bounded_text_arg(arg_value(args, "--to"), "", 16);
+            let cninfo_event_from = bounded_text_arg(arg_value(args, "--cninfo-event-from"), "", 16);
+            // Deep-research scope/quality knobs (only meaningful with --deep).
+            let cninfo_periodic_from = bounded_text_arg(arg_value(args, "--cninfo-periodic-from"), "", 16);
+            let top_wiki = bounded_numeric_arg(arg_value(args, "--top-wiki"), "", 100);
+            let top_raw = bounded_numeric_arg(arg_value(args, "--top-raw"), "", 100);
+            let graph_neighbors = bounded_numeric_arg(arg_value(args, "--graph-neighbors"), "", 500);
+            let graph_depth = bounded_numeric_arg(arg_value(args, "--graph-depth"), "", 6);
+            let cninfo_download_limit = bounded_numeric_arg(arg_value(args, "--cninfo-download-limit"), "", 500);
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
+            let mut built = vec![
+                "company-research".into(),
+                "--stock".into(),
+                bounded_text_arg(Some(stock), "", 40),
+                "--provider".into(),
+                "openai".into(),
+            ];
+            if !from.is_empty() {
+                built.push("--from".into());
+                built.push(from);
+            }
+            if !to.is_empty() {
+                built.push("--to".into());
+                built.push(to);
+            }
+            if !cninfo_event_from.is_empty() {
+                built.push("--cninfo-event-from".into());
+                built.push(cninfo_event_from);
+            }
+            if args.iter().any(|a| a == "--deep") {
+                built.push("--deep".into());
+                if !cninfo_periodic_from.is_empty() {
+                    built.push("--cninfo-periodic-from".into());
+                    built.push(cninfo_periodic_from);
+                }
+                if !top_wiki.is_empty() {
+                    built.push("--top-wiki".into());
+                    built.push(top_wiki);
+                }
+                if !top_raw.is_empty() {
+                    built.push("--top-raw".into());
+                    built.push(top_raw);
+                }
+                if !graph_neighbors.is_empty() {
+                    built.push("--graph-neighbors".into());
+                    built.push(graph_neighbors);
+                }
+                if !graph_depth.is_empty() {
+                    built.push("--graph-depth".into());
+                    built.push(graph_depth);
+                }
+                if !cninfo_download_limit.is_empty() {
+                    built.push("--cninfo-download-limit".into());
+                    built.push(cninfo_download_limit);
+                }
+            }
+            if !api_key.is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
+            built
+        }
+        "research-os" => {
+            // research-os agent <status|plan|step|review|verify|context>
+            // The scope ("agent") and sub-action arrive as positional tokens
+            // (args._ in the CLI parser). Pass them through if allow-listed.
+            let allowed_positional = [
+                "agent", "status", "plan", "step", "run-step", "review", "verify", "context",
+            ];
+            let mut positionals: Vec<String> = args
+                .iter()
+                .filter(|a| !a.starts_with("--") && allowed_positional.contains(&a.as_str()))
+                .cloned()
+                .collect();
+            if !positionals.iter().any(|p| p == "agent") {
+                positionals.insert(0, "agent".to_string());
+            }
+            let write = args.iter().any(|a| a == "--write");
+            let confirm_human_gate = args.iter().any(|a| {
+                a == "--confirm-human-gate" || a == "--human-gate-confirmed" || a == "--approved"
+            });
+            let step_id = bounded_text_arg(
+                arg_value(args, "--step-id").or_else(|| arg_value(args, "--id")),
+                "",
+                200,
+            );
+            let queue = bounded_text_arg(
+                arg_value(args, "--queue").or_else(|| arg_value(args, "--queue-id")),
+                "",
+                200,
+            );
+            let source = bounded_text_arg(arg_value(args, "--source"), "", 200);
+            let generated_at = bounded_text_arg(arg_value(args, "--generated-at"), "", 64);
+            let operator_next_step = bounded_text_arg(
+                arg_value(args, "--operator-next-step")
+                    .or_else(|| arg_value(args, "--operatorNextStep")),
+                "",
+                400,
+            );
+            let status_filter = bounded_text_arg(arg_value(args, "--status"), "", 64);
+            let limit = bounded_numeric_arg(
+                arg_value(args, "--limit").or_else(|| arg_value(args, "--action-limit")),
+                "20",
+                500,
+            );
+            let dry_run_ready = args.iter().any(|a| a == "--dry-run-ready" || a == "--dryRunReady");
+            let write_ready = args.iter().any(|a| a == "--write-ready" || a == "--writeReady");
+
+            let mut built: Vec<String> = vec!["research-os".into()];
+            for p in &positionals {
+                built.push(p.clone());
+            }
+            if !step_id.is_empty() {
+                built.push("--step-id".into());
+                built.push(step_id);
+            }
+            if !queue.is_empty() {
+                built.push("--queue".into());
+                built.push(queue);
+            }
+            if !source.is_empty() {
+                built.push("--source".into());
+                built.push(source);
+            }
+            if !status_filter.is_empty() {
+                built.push("--status".into());
+                built.push(status_filter);
+            }
+            if limit != "20" {
+                built.push("--limit".into());
+                built.push(limit);
+            }
+            if !generated_at.is_empty() {
+                built.push("--generated-at".into());
+                built.push(generated_at);
+            }
+            if !operator_next_step.is_empty() {
+                built.push("--operator-next-step".into());
+                built.push(operator_next_step);
+            }
+            if dry_run_ready {
+                built.push("--dry-run-ready".into());
+            }
+            if write_ready {
+                built.push("--write-ready".into());
+            }
+            if confirm_human_gate {
+                built.push("--confirm-human-gate".into());
+            }
+            if write {
+                built.push("--write".into());
+            }
+            built
+        }
+        "self-question" => {
+            // Recursive self-question evolution loop (the core ask->validate->attribute
+            // trio plus optional evidence/policy/self-train/export stages). The GUI panel
+            // exposes only the safe, deterministic subset:
+            //   - rule-based question planner (hardcoded --no-llm-question-planner) because
+            //     DeepSeek/OpenAI-compatible endpoints do not support /v1/responses; answers
+            //     and later stages use external kline (xueqiu) + brain records, no LLM needed.
+            //   - anchored validations fall back to xueqiu via --allow-anchored-external-market
+            //     (self-question records carry createdAt, so they are always "anchored").
+            // The macOS codex-only policy-regression/export stages are reachable only through
+            // the richer CLI, not this panel.
+            let stages = sanitize_stage_list(
+                arg_value(args, "--stages"),
+                "generate,validate,attribute",
+            );
+            let question_count = bounded_numeric_arg(arg_value(args, "--question-count"), "3", 50);
+            let market_validate_raw =
+                bounded_text_arg(arg_value(args, "--market-validate"), "xueqiu", 16);
+            let market_validate = if ["off", "auto", "on", "eastmoney", "tencent", "xueqiu"]
+                .contains(&market_validate_raw.as_str())
+            {
+                market_validate_raw
+            } else {
+                "xueqiu".to_string()
+            };
+            let em_timeout = bounded_numeric_arg(
+                arg_value(args, "--external-market-timeout-ms"),
+                "3000",
+                60000,
+            );
+            let em_concurrency = bounded_numeric_arg(
+                arg_value(args, "--external-market-concurrency"),
+                "6",
+                50,
+            );
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
+            let mut built = vec![
+                "self-question".into(),
+                "loop".into(),
+                "--stages".into(),
+                stages,
+                "--question-count".into(),
+                question_count,
+                "--market-validate".into(),
+                market_validate,
+                "--allow-anchored-external-market".into(),
+                "--external-market-timeout-ms".into(),
+                em_timeout,
+                "--external-market-concurrency".into(),
+                em_concurrency,
+                // DeepSeek/OpenAI-compatible endpoints do not support the /v1/responses
+                // planner; disable it so questions fall back to rule-based generation.
+                "--no-llm-question-planner".into(),
+                "--profile".into(),
+                "local-max".into(),
+                "--provider".into(),
+                "openai".into(),
+            ];
+            if args.iter().any(|a| a == "--self-train-write") {
+                built.push("--self-train-write".into());
+            }
+            if args.iter().any(|a| a == "--write") {
+                built.push("--write".into());
+            }
+            if !api_key.is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
+            built
+        }
         "autoresearch-ledger" => vec![
             "autoresearch".into(),
             "ledger".into(),
@@ -1051,6 +1930,500 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
             "autoresearch".into(),
             "status".into(),
         ],
+        "brain" => {
+            // brain <status|remember|resolve>
+            // The subcommand arrives as a positional token (args._[1] in the
+            // CLI parser). Pass it through only if allow-listed; default to status.
+            // brain does not call any LLM, so no provider/api-key forwarding.
+            let allowed_sub = ["status", "remember", "resolve"];
+            let sub = args
+                .iter()
+                .find(|a| !a.starts_with("--") && allowed_sub.contains(&a.as_str()))
+                .cloned()
+                .unwrap_or_else(|| "status".to_string());
+            let mut built: Vec<String> = vec!["brain".into(), sub.clone()];
+            match sub.as_str() {
+                "remember" => {
+                    let btype = bounded_text_arg(Some(require_arg(args, "--type")?), "", 60);
+                    let text = bounded_text_arg(Some(require_arg(args, "--text")?), "", 4000);
+                    built.push("--type".into());
+                    built.push(btype);
+                    built.push("--text".into());
+                    built.push(text);
+                    for (flag, value) in [
+                        ("--title", bounded_text_arg(arg_value(args, "--title"), "", 300)),
+                        ("--status", bounded_text_arg(arg_value(args, "--status"), "", 40)),
+                        ("--source", bounded_text_arg(arg_value(args, "--source"), "", 200)),
+                        ("--tags", bounded_text_arg(arg_value(args, "--tags"), "", 400)),
+                        ("--related", bounded_text_arg(arg_value(args, "--related"), "", 400)),
+                    ] {
+                        if !value.trim().is_empty() {
+                            built.push(flag.into());
+                            built.push(value);
+                        }
+                    }
+                }
+                "resolve" => {
+                    let id = bounded_text_arg(Some(require_arg(args, "--id")?), "", 180);
+                    let result = bounded_text_arg(Some(require_arg(args, "--result")?), "", 40);
+                    let note = bounded_text_arg(arg_value(args, "--note"), "", 600);
+                    built.push("--id".into());
+                    built.push(id);
+                    built.push("--result".into());
+                    built.push(result);
+                    if !note.trim().is_empty() {
+                        built.push("--note".into());
+                        built.push(note);
+                    }
+                }
+                _ => {}
+            }
+            built
+        }
+        "deep-research" => {
+            // deep-research — general topic deep research via web + wiki + graph + facts.
+            // Requires --topic. Uses LLM; forward --provider openai + api-key/endpoint/model.
+            let topic = bounded_text_arg(Some(require_arg(args, "--topic")?), "", 300);
+            let queries = bounded_text_arg(arg_value(args, "--queries"), "", 800);
+            let max_results = bounded_numeric_arg(arg_value(args, "--max-results"), "", 100);
+            let source_k = bounded_numeric_arg(arg_value(args, "--source-k"), "", 100);
+            let graph_depth = bounded_numeric_arg(arg_value(args, "--graph-depth"), "", 6);
+            let graph_neighbors = bounded_numeric_arg(arg_value(args, "--graph-neighbors"), "", 500);
+            let top_brain = bounded_numeric_arg(arg_value(args, "--top-brain"), "", 200);
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
+
+            let mut built: Vec<String> = vec!["deep-research".into()];
+            built.push("--topic".into());
+            built.push(topic);
+            built.push("--provider".into());
+            built.push("openai".into());
+
+            for (flag, val) in [
+                ("--queries", &queries),
+                ("--max-results", &max_results),
+                ("--source-k", &source_k),
+                ("--graph-depth", &graph_depth),
+                ("--graph-neighbors", &graph_neighbors),
+                ("--top-brain", &top_brain),
+            ] {
+                if !val.is_empty() {
+                    built.push(flag.into());
+                    built.push(val.clone());
+                }
+            }
+
+            if arg_value(args, "--write").is_some() { built.push("--write".into()); }
+            if arg_value(args, "--ingest").is_some() { built.push("--ingest".into()); }
+            if arg_value(args, "--apply-ingest").is_some() { built.push("--apply-ingest".into()); }
+            if arg_value(args, "--include-invalidated").is_some() { built.push("--include-invalidated".into()); }
+
+            if !api_key.is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
+            built
+        }
+        "concepts" => {
+            // concepts [audit] — concept governance audit (no LLM)
+            let sub = args
+                .iter()
+                .find(|a| !a.starts_with("--") && *a == "audit")
+                .cloned()
+                .unwrap_or_else(|| "audit".to_string());
+            let top_n = bounded_numeric_arg(arg_value(args, "--top-n"), "", 10_000);
+            let write = arg_value(args, "--write").is_some();
+            let rulings = bounded_text_arg(arg_value(args, "--concept-rulings"), "", 800);
+            let mut built: Vec<String> = vec!["concepts".into(), sub];
+            if !top_n.is_empty() {
+                built.push("--top-n".into());
+                built.push(top_n);
+            }
+            if write {
+                built.push("--write".into());
+            }
+            if !rulings.is_empty() {
+                built.push("--concept-rulings".into());
+                built.push(rulings);
+            }
+            built
+        }
+        "temporal-facts" => {
+            // temporal-facts [audit] — temporal facts audit (no LLM)
+            let sub = args
+                .iter()
+                .find(|a| !a.starts_with("--") && *a == "audit")
+                .cloned()
+                .unwrap_or_else(|| "audit".to_string());
+            let top_n = bounded_numeric_arg(arg_value(args, "--top-n"), "", 10_000);
+            let write = arg_value(args, "--write").is_some();
+            let mut built: Vec<String> = vec!["temporal-facts".into(), sub];
+            if !top_n.is_empty() {
+                built.push("--top-n".into());
+                built.push(top_n);
+            }
+            if write {
+                built.push("--write".into());
+            }
+            built
+        }
+        "data-engineering" => {
+            // Aggregated arm: the front-end sends --task <name> + task-specific flags.
+            // Each task maps to its native CLI command; LLM-only tasks get
+            // --provider openai + api-key/endpoint/model forwarding.
+            let task = require_arg(args, "--task")?;
+            let allowed_tasks = [
+                "prepare",
+                "convert-source",
+                "embeddings",
+                "api-run",
+                "finalize",
+                "apply",
+                "batch-run",
+                "sag-sync",
+                "hygiene",
+            ];
+            if !allowed_tasks.contains(&task.as_str()) {
+                return Err(format!(
+                    "data-engineering: unknown --task '{}'.  Allowed: {}",
+                    task,
+                    allowed_tasks.join(", ")
+                ));
+            }
+
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
+            let emb_key = bounded_text_arg(arg_value(args, "--embedding-api-key"), "", 400);
+            let emb_endpoint = bounded_text_arg(arg_value(args, "--embedding-endpoint"), "", 400);
+            let emb_model = bounded_text_arg(arg_value(args, "--embedding-model"), "", 200);
+
+            let mut built: Vec<String> = vec![];
+
+            match task.as_str() {
+                "prepare" => {
+                    let source = bounded_text_arg(Some(require_arg(args, "--source")?), "", 800);
+                    let schema = bounded_text_arg(arg_value(args, "--schema"), "", 800);
+                    built.push("prepare".into());
+                    built.push("--source".into());
+                    built.push(source);
+                    if !schema.is_empty() {
+                        built.push("--schema".into());
+                        built.push(schema);
+                    }
+                    if arg_value(args, "--no-report").is_some() {
+                        built.push("--no-report".into());
+                    }
+                    for (flag, val) in [
+                        ("--embedding-routing", arg_value(args, "--embedding-routing")),
+                    ] {
+                        if val.is_some() {
+                            built.push(flag.into());
+                        }
+                    }
+                    for (flag, val) in [
+                        ("--embedding-api-key", &emb_key),
+                        ("--embedding-endpoint", &emb_endpoint),
+                        ("--embedding-model", &emb_model),
+                    ] {
+                        if !val.is_empty() {
+                            built.push(flag.into());
+                            built.push(val.clone());
+                        }
+                    }
+                }
+                "convert-source" => {
+                    let source = bounded_text_arg(Some(require_arg(args, "--source")?), "", 800);
+                    let output = bounded_text_arg(arg_value(args, "--output"), "", 800);
+                    built.push("convert-source".into());
+                    built.push("--source".into());
+                    built.push(source);
+                    if !output.is_empty() {
+                        built.push("--output".into());
+                        built.push(output);
+                    }
+                    if arg_value(args, "--overwrite").is_some() {
+                        built.push("--overwrite".into());
+                    }
+                    if arg_value(args, "--no-ocr").is_some() {
+                        built.push("--no-ocr".into());
+                    }
+                    let markitdown_bin = bounded_text_arg(arg_value(args, "--markitdown-bin"), "", 800);
+                    let ocr_python = bounded_text_arg(arg_value(args, "--ocr-python-bin"), "", 800);
+                    for (flag, val) in [("--markitdown-bin", markitdown_bin), ("--ocr-python-bin", ocr_python)] {
+                        if !val.is_empty() {
+                            built.push(flag.into());
+                            built.push(val);
+                        }
+                    }
+                }
+                "embeddings" => {
+                    let allowed_sub = ["build", "status"];
+                    let sub = args
+                        .iter()
+                        .find(|a| !a.starts_with("--") && allowed_sub.contains(&a.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| "status".to_string());
+                    built.push("embeddings".into());
+                    built.push(sub.clone());
+                    if sub == "build" {
+                        let batch = bounded_numeric_arg(arg_value(args, "--embedding-batch-size"), "", 10_000);
+                        let timeout = bounded_numeric_arg(arg_value(args, "--embedding-timeout-ms"), "", 300_000);
+                        if !batch.is_empty() {
+                            built.push("--embedding-batch-size".into());
+                            built.push(batch);
+                        }
+                        if !timeout.is_empty() {
+                            built.push("--embedding-timeout-ms".into());
+                            built.push(timeout);
+                        }
+                    }
+                    for (flag, val) in [
+                        ("--embedding-api-key", &emb_key),
+                        ("--embedding-endpoint", &emb_endpoint),
+                        ("--embedding-model", &emb_model),
+                    ] {
+                        if !val.is_empty() {
+                            built.push(flag.into());
+                            built.push(val.clone());
+                        }
+                    }
+                }
+                "api-run" => {
+                    let source = bounded_text_arg(Some(require_arg(args, "--source")?), "", 800);
+                    let schema = bounded_text_arg(arg_value(args, "--schema"), "", 800);
+                    built.push("api-run".into());
+                    built.push("--source".into());
+                    built.push(source);
+                    if !schema.is_empty() {
+                        built.push("--schema".into());
+                        built.push(schema);
+                    }
+                    let items = [
+                        "--page-concurrency", "--page-write-mode", "--source-sharding",
+                        "--source-retention", "--reasoning-effort",
+                    ];
+                    for flag in items {
+                        let v = bounded_text_arg(arg_value(args, flag), "", 40);
+                        if !v.is_empty() {
+                            built.push(flag.into());
+                            built.push(v);
+                        }
+                    }
+                    let nums = [
+                        "--codex-timeout-ms", "--max-plan-items", "--max-create-pages",
+                        "--max-update-pages", "--shard-concurrency", "--max-shard-chars",
+                    ];
+                    for flag in nums {
+                        let v = bounded_numeric_arg(arg_value(args, flag), "", 100_000_000);
+                        if !v.is_empty() {
+                            built.push(flag.into());
+                            built.push(v);
+                        }
+                    }
+                    if arg_value(args, "--judgments").is_some() {
+                        built.push("--judgments".into());
+                    }
+                    // embedding sub-flags
+                    for (flag, val) in [
+                        ("--embedding-routing", arg_value(args, "--embedding-routing")),
+                    ] {
+                        if val.is_some() { built.push(flag.into()); }
+                    }
+                    for (flag, val) in [
+                        ("--embedding-api-key", &emb_key),
+                        ("--embedding-endpoint", &emb_endpoint),
+                        ("--embedding-model", &emb_model),
+                    ] {
+                        if !val.is_empty() {
+                            built.push(flag.into());
+                            built.push(val.clone());
+                        }
+                    }
+                }
+                "finalize" => {
+                    let report = bounded_text_arg(Some(require_arg(args, "--report")?), "", 800);
+                    built.push("finalize".into());
+                    built.push("--report".into());
+                    built.push(report);
+                    let reasoning = bounded_text_arg(arg_value(args, "--reasoning-effort"), "", 40);
+                    if !reasoning.is_empty() {
+                        built.push("--reasoning-effort".into());
+                        built.push(reasoning);
+                    }
+                    let timeout = bounded_numeric_arg(arg_value(args, "--codex-timeout-ms"), "", 1_200_000);
+                    if !timeout.is_empty() {
+                        built.push("--codex-timeout-ms".into());
+                        built.push(timeout);
+                    }
+                }
+                "apply" => {
+                    let manifest = bounded_text_arg(Some(require_arg(args, "--manifest")?), "", 800);
+                    built.push("apply".into());
+                    built.push("--manifest".into());
+                    built.push(manifest);
+                    if arg_value(args, "--write").is_some() {
+                        built.push("--write".into());
+                    }
+                    if arg_value(args, "--allow-source-change").is_some() {
+                        built.push("--allow-source-change".into());
+                    }
+                }
+                "batch-run" => {
+                    let sources = bounded_text_arg(Some(require_arg(args, "--sources")?), "", 800);
+                    let schema = bounded_text_arg(arg_value(args, "--schema"), "", 800);
+                    built.push("batch-run".into());
+                    built.push("--sources".into());
+                    built.push(sources);
+                    if !schema.is_empty() {
+                        built.push("--schema".into());
+                        built.push(schema);
+                    }
+                    let text_flags = [
+                        "--page-concurrency", "--page-write-mode", "--source-sharding",
+                        "--source-retention", "--conflict-policy", "--reasoning-effort",
+                    ];
+                    for flag in text_flags {
+                        let v = bounded_text_arg(arg_value(args, flag), "", 40);
+                        if !v.is_empty() {
+                            built.push(flag.into());
+                            built.push(v);
+                        }
+                    }
+                    let num_flags = [
+                        "--api-concurrency", "--codex-timeout-ms", "--max-plan-items",
+                        "--max-create-pages", "--max-update-pages", "--shard-concurrency",
+                        "--max-shard-chars", "--write-concurrency",
+                    ];
+                    for flag in num_flags {
+                        let v = bounded_numeric_arg(arg_value(args, flag), "", 100_000_000);
+                        if !v.is_empty() {
+                            built.push(flag.into());
+                            built.push(v);
+                        }
+                    }
+                    if arg_value(args, "--judgments").is_some() {
+                        built.push("--judgments".into());
+                    }
+                    if arg_value(args, "--write").is_some() {
+                        built.push("--write".into());
+                    }
+                    // embedding sub-flags
+                    for (flag, val) in [
+                        ("--embedding-routing", arg_value(args, "--embedding-routing")),
+                    ] {
+                        if val.is_some() { built.push(flag.into()); }
+                    }
+                    for (flag, val) in [
+                        ("--embedding-api-key", &emb_key),
+                        ("--embedding-endpoint", &emb_endpoint),
+                        ("--embedding-model", &emb_model),
+                    ] {
+                        if !val.is_empty() {
+                            built.push(flag.into());
+                            built.push(val.clone());
+                        }
+                    }
+                }
+                "sag-sync" => {
+                    let allowed_sub = ["status", "report", "scan-reports", "file", "scan-wiki", "pending"];
+                    let sub = args
+                        .iter()
+                        .find(|a| !a.starts_with("--") && allowed_sub.contains(&a.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| "status".to_string());
+                    built.push("sag-sync".into());
+                    built.push(sub.clone());
+                    let text_flags = [
+                        "--sag-api-base", "--sag-project-name", "--sync-root", "--since",
+                    ];
+                    for flag in text_flags {
+                        let v = bounded_text_arg(arg_value(args, flag), "", 400);
+                        if !v.is_empty() {
+                            built.push(flag.into());
+                            built.push(v);
+                        }
+                    }
+                    let num_flags = ["--limit", "--offset", "--max-content-bytes"];
+                    for flag in num_flags {
+                        let v = bounded_numeric_arg(arg_value(args, flag), "", 100_000_000);
+                        if !v.is_empty() {
+                            built.push(flag.into());
+                            built.push(v);
+                        }
+                    }
+                    if arg_value(args, "--force").is_some() {
+                        built.push("--force".into());
+                    }
+                    if arg_value(args, "--no-extract").is_some() {
+                        built.push("--no-extract".into());
+                    }
+                    if sub == "report" {
+                        let report_path = bounded_text_arg(arg_value(args, "--report"), "", 800);
+                        if !report_path.is_empty() {
+                            built.push("--report".into());
+                            built.push(report_path);
+                        }
+                    }
+                    if sub == "file" {
+                        let file_path = bounded_text_arg(arg_value(args, "--path"), "", 800);
+                        if !file_path.is_empty() {
+                            built.push("--path".into());
+                            built.push(file_path);
+                        }
+                    }
+                }
+                "hygiene" => {
+                    let allowed_sub = ["audit", "clean"];
+                    let sub = args
+                        .iter()
+                        .find(|a| !a.starts_with("--") && allowed_sub.contains(&a.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| "audit".to_string());
+                    built.push("hygiene".into());
+                    built.push(sub.clone());
+                    let keep_days = bounded_numeric_arg(arg_value(args, "--keep-days"), "", 3650);
+                    if !keep_days.is_empty() {
+                        built.push("--keep-days".into());
+                        built.push(keep_days);
+                    }
+                    if arg_value(args, "--write").is_some() {
+                        built.push("--write".into());
+                    }
+                }
+                _ => unreachable!(),
+            }
+
+            // Append provider/api-key/endpoint/model for tasks that call LLM
+            let llm_tasks = ["api-run", "finalize", "batch-run"];
+            if llm_tasks.contains(&task.as_str()) {
+                built.push("--provider".into());
+                built.push("openai".into());
+                if !api_key.is_empty() {
+                    built.push("--api-key".into());
+                    built.push(api_key);
+                }
+                if !endpoint.is_empty() {
+                    built.push("--endpoint".into());
+                    built.push(endpoint);
+                }
+                if !model.is_empty() {
+                    built.push("--model".into());
+                    built.push(model);
+                }
+            }
+
+            built
+        }
         "dashboard-data" => vec![
             "hypothesis".into(),
             "dashboard-data".into(),
@@ -1067,6 +2440,10 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
             );
             let since = bounded_text_arg(arg_value(args, "--since"), "3650d", 24);
             let timeout = bounded_numeric_arg(arg_value(args, "--timeout-ms"), "300000", 900000);
+            let provider = bounded_text_arg(arg_value(args, "--provider"), "openai", 32);
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
             let mut built = vec![
                 "hypothesis".into(),
                 "discover".into(),
@@ -1081,10 +2458,22 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 "--since".into(),
                 since,
                 "--provider".into(),
-                "codex".into(),
+                provider,
                 "--timeout-ms".into(),
                 timeout,
             ];
+            if !api_key.is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
             append_default_finance_entity_audit_roots(&mut built);
             built
         }
@@ -1116,6 +2505,8 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
             let query = require_arg(args, "--query")?;
             let timeout = bounded_numeric_arg(arg_value(args, "--agent-timeout-ms"), "180000", 600000);
             let concurrency = bounded_numeric_arg(arg_value(args, "--agent-concurrency"), "2", 6);
+            let sources = bounded_text_arg(arg_value(args, "--sources"), "wiki,raw,graph,facts,brain", 180);
+            let source_k = bounded_numeric_arg(arg_value(args, "--source-k"), "3", 8);
             vec![
                 "ask".into(),
                 "--query".into(),
@@ -1123,6 +2514,10 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 "--agentic".into(),
                 "--show-context".into(),
                 "--show-sources".into(),
+                "--sources".into(),
+                sources,
+                "--source-k".into(),
+                source_k,
                 "--profile".into(),
                 "local-max".into(),
                 "--agent-timeout-ms".into(),
@@ -2072,6 +3467,9 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
             let hypothesis_id = bounded_text_arg(arg_value(args, "--hypothesis-id"), "", 180);
             let selected_sources = bounded_text_arg(arg_value(args, "--selected-sources"), "", 400);
             let provider = bounded_text_arg(arg_value(args, "--provider"), "codex", 24);
+            let api_key = bounded_text_arg(arg_value(args, "--api-key"), "", 400);
+            let endpoint = bounded_text_arg(arg_value(args, "--endpoint"), "", 400);
+            let model = bounded_text_arg(arg_value(args, "--model"), "", 200);
             let timeout = bounded_numeric_arg(arg_value(args, "--timeout-ms"), "300000", 900000);
             let ima_timeout = bounded_numeric_arg(arg_value(args, "--ima-timeout-ms"), "8000", 60000);
             let ima_max_knowledge_bases =
@@ -2084,7 +3482,7 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 "--body".into(),
                 bounded_text_arg(Some(body), "", 12000),
                 "--provider".into(),
-                if provider == "openai" { "openai".into() } else { "codex".into() },
+                if provider == "codex" { "codex".into() } else { "openai".into() },
                 "--timeout-ms".into(),
                 timeout,
                 "--ima-timeout-ms".into(),
@@ -2096,6 +3494,18 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 "--ima-max-queries".into(),
                 ima_max_queries,
             ];
+            if !api_key.trim().is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.trim().is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.trim().is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
             if !source_refs.trim().is_empty() {
                 built.push("--source-refs".into());
                 built.push(source_refs);
@@ -2124,6 +3534,10 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 bounded_numeric_arg(arg_value(args, "--llm-review-max-items"), "8", 20);
             let llm_review_timeout =
                 bounded_numeric_arg(arg_value(args, "--llm-review-timeout-ms"), "120000", 300000);
+            let provider = arg_value(args, "--provider").unwrap_or_else(|| "codex".to_string());
+            let api_key = arg_value(args, "--api-key").unwrap_or_default();
+            let endpoint = arg_value(args, "--endpoint").unwrap_or_default();
+            let model = arg_value(args, "--model").unwrap_or_default();
             let mut built = vec![
                 "hypothesis".into(),
                 "watch".into(),
@@ -2140,8 +3554,20 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 "--llm-review-timeout-ms".into(),
                 llm_review_timeout,
                 "--provider".into(),
-                "codex".into(),
+                provider,
             ];
+            if !api_key.trim().is_empty() {
+                built.push("--api-key".into());
+                built.push(api_key);
+            }
+            if !endpoint.trim().is_empty() {
+                built.push("--endpoint".into());
+                built.push(endpoint);
+            }
+            if !model.trim().is_empty() {
+                built.push("--model".into());
+                built.push(model);
+            }
             if !hypothesis_id.trim().is_empty() {
                 built.push("--hypothesis-id".into());
                 built.push(hypothesis_id);
@@ -2177,6 +3603,33 @@ fn build_allowed_args(action: &str, args: &[String], project_path: &str) -> Resu
                 "--json".into(),
             ]
         }
+        "ima-sync" => {
+            // IMA 研报同步（Node 内置实现，无 LLM 依赖）。
+            // 子模式：extract / status / folders / check（只比对不下载）/ sync。
+            let mode = bounded_text_arg(arg_value(args, "--mode"), "sync", 16);
+            let har = bounded_text_arg(arg_value(args, "--har"), "", 2000);
+            let out = bounded_text_arg(arg_value(args, "--out"), "", 1000);
+            let folder = bounded_text_arg(arg_value(args, "--folder"), "", 200);
+            let kb = bounded_text_arg(arg_value(args, "--kb"), "", 64);
+            let mut built = vec!["ima-sync".into(), "--mode".into(), mode];
+            if !har.is_empty() {
+                built.push("--har".into());
+                built.push(har);
+            }
+            if !out.is_empty() {
+                built.push("--out".into());
+                built.push(out);
+            }
+            if !folder.is_empty() {
+                built.push("--folder".into());
+                built.push(folder);
+            }
+            if !kb.is_empty() {
+                built.push("--kb".into());
+                built.push(kb);
+            }
+            built
+        }
         _ => return Err(format!("Unsupported research cockpit action: {}", action)),
     };
     cli_args.push("--project".into());
@@ -2197,6 +3650,17 @@ fn resolve_node_binary() -> String {
             return value;
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        for candidate in [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "C:\\Program Files (x86)\\nodejs\\node.exe",
+        ] {
+            if Path::new(candidate).exists() {
+                return candidate.to_string();
+            }
+        }
+    }
     for candidate in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
         if Path::new(candidate).exists() {
             return candidate.to_string();
@@ -2206,7 +3670,8 @@ fn resolve_node_binary() -> String {
 }
 
 #[tauri::command]
-pub fn run_research_cockpit_command(
+pub async fn run_research_cockpit_command(
+    app_handle: tauri::AppHandle,
     project_path: String,
     action: String,
     args: Vec<String>,
@@ -2220,22 +3685,80 @@ pub fn run_research_cockpit_command(
         .ok_or_else(|| "Unable to resolve repository root.".to_string())?;
     let script_path = repo_root.join("scripts").join("codex-ingest.mjs");
     let cli_args = build_allowed_args(&action, &args, &project_path)?;
-    let output = Command::new(resolve_node_binary())
-        .arg(script_path)
-        .args(cli_args)
-        .current_dir(repo_root)
-        .output()
-        .map_err(|err| format!("Failed to run Research Cockpit command: {}", err))?;
+    let node = resolve_node_binary();
 
-    if !output.status.success() {
-        let stderr = safe_output(&output.stderr).unwrap_or_else(|_| "stderr too large".to_string());
-        let stdout = safe_output(&output.stdout).unwrap_or_else(|_| "stdout too large".to_string());
-        return Err(format!(
-            "Research Cockpit command failed with status {}. stderr: {} stdout: {}",
-            output.status,
-            stderr.trim(),
-            stdout.trim()
-        ));
-    }
-    safe_output(&output.stdout)
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let mut cmd = Command::new(&node);
+        cmd.arg(&script_path)
+            .args(&cli_args)
+            .current_dir(&repo_root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Feed api-key via env where possible to avoid plaintext in the argv process list.
+        if let Some(pos) = cli_args.iter().position(|a| a == "--api-key") {
+            if let Some(key) = cli_args.get(pos + 1) {
+                if !key.is_empty() {
+                    cmd.env("OPENAI_API_KEY", key);
+                }
+            }
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("Failed to run Research Cockpit command: {}", err))?;
+
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Failed to capture stderr.".to_string())?;
+        let stderr_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let app_stderr = app_handle.clone();
+        let action_stderr = action.clone();
+        let stderr_acc_clone = stderr_acc.clone();
+        let stderr_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().flatten() {
+                if let Ok(mut g) = stderr_acc_clone.lock() {
+                    g.push_str(&line);
+                    g.push('\n');
+                }
+                let _ = app_stderr.emit(
+                    "research-cockpit-progress",
+                    serde_json::json!({ "action": action_stderr, "stream": "stderr", "line": line }),
+                );
+            }
+        });
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Failed to capture stdout.".to_string())?;
+        let reader = BufReader::new(stdout);
+        let mut stdout_out = String::new();
+        for line in reader.lines().flatten() {
+            stdout_out.push_str(&line);
+            stdout_out.push('\n');
+            let _ = app_handle.emit(
+                "research-cockpit-progress",
+                serde_json::json!({ "action": action.clone(), "stream": "stdout", "line": line }),
+            );
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed to wait for command: {}", e))?;
+        let _ = stderr_thread.join();
+        if !status.success() {
+            let err = stderr_acc.lock().map(|g| g.clone()).unwrap_or_default();
+            return Err(format!(
+                "Research Cockpit command failed with status {}. stderr: {}",
+                status,
+                err.trim()
+            ));
+        }
+        Ok(stdout_out)
+    })
+    .await
+    .map_err(|e| format!("Research Cockpit runtime error: {}", e))??;
+
+    safe_output(result.as_bytes())
 }
